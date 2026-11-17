@@ -1,0 +1,322 @@
+# anime-api
+
+A small Python/Flask JSON API that wraps several anime streaming sites behind
+one stable interface, so a website (or app) can search, browse, get details
+and resolve playable streams without scraping each site itself.
+
+Stack: Python 3.10+, Flask, requests, beautifulsoup4, cryptography.
+
+## Layout
+
+```
+anime-api/
+  README.md  requirements.txt  run.sh  app.py
+  anime_api/
+    __init__.py  config.py  http.py
+    sources/__init__.py  sources/base.py  sources/<id>.py   (one file per source)
+    extractors/__init__.py  extractors/megaplay.py  ...
+  tests/test_live.py
+```
+
+The shared contract every source follows lives in
+`INTERFACE.md` (in this repo).
+
+## Source status — live-tested 2026-11-18
+
+Full per-endpoint results: `TEST-REPORT.md` (30/42 endpoints passed).
+
+| Source | Language | Status |
+|---|---|---|
+| Xanime (`xanime`) | English | ✅ Working — search, home, details, streams (direct M3U8) |
+| Re:ANIME (`reanime`) | English | ✅ Working — search, home, details, streams (flixcloud file, `proxy=true`) |
+| 9anime (`nineanime`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p) |
+| AniKoto (`anikoto`) | English | ✅ Working — search, home, details, streams (MegaPlay 800p) |
+| AniSuge (`anisuge`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p) |
+| Anime World India (`animeworld`) | Hindi | ⚠️ **Degraded** — see below |
+| Rare Toons India (`rareanimes`) | Hindi | ⚠️ **Degraded** — see below |
+
+### Why the two Hindi sources are degraded
+
+Both Hindi sites hard-block the IP this API was built on at the Cloudflare
+WAF level (HTTP 403 on every request, even from a real headless browser —
+there is no JS challenge to solve and a `cf_clearance` cookie does not lift
+it). Their code is complete and unit-tested (44 fixture tests pass), but no
+live data could be fetched from this sandbox. On a host with a clean IP they
+should work — `anime_api/cf.py` already implements the clearance flow
+(Playwright solve → 15h cookie cache → requests with cookies).
+
+To enable them on your server, either:
+
+- run the API from an IP the sites do not block, or
+- paste a `cf_clearance` cookie obtained once in a real browser:
+
+```sh
+export CF_CLEARANCE_WATCHANIMEWORLD_ONE="<cookie value>"
+export CF_CLEARANCE_WWW_RAREANIMES_FANS="<cookie value>"
+# matching browser User-Agent, if the cookie was issued for one:
+export CF_UA_WATCHANIMEWORLD_ONE="Mozilla/5.0 ..."
+```
+
+(Cookies can also be seeded from a JSON file via `ANIME_API_CF_COOKIES` —
+see the `anime_api/cf.py` docstring.)
+
+## Honest caveats
+
+- The sources are **unofficial** fan sites. They change their HTML/layout
+  without notice, so scrapers need maintenance when a site changes.
+- Some stream links need the `/api/proxy` endpoint to play in a browser
+  (hotlink protection; Re:ANIME's flixcloud tokens are bound to the IP that
+  requested them).
+- A few streams can only be resolved in a real browser (WebView-only hosts)
+  and are skipped server-side — see each source module's docstring.
+
+## How to run locally
+
+```sh
+cd ~/workspace/anime-api
+./run.sh
+# server listens on http://localhost:8000
+```
+
+`run.sh` starts the server with the project venv
+(`~/workspace/anime-api-work/venv/bin/python`). To run manually:
+
+```sh
+~/workspace/anime-api-work/venv/bin/python app.py
+# or: ANIME_API_PORT=8000 ~/workspace/anime-api-work/venv/bin/python app.py
+```
+
+Install dependencies (already present in the venv) with:
+
+```sh
+~/workspace/anime-api-work/venv/bin/pip install -r requirements.txt
+```
+
+## API
+
+All responses are JSON and CORS is enabled (`Access-Control-Allow-Origin: *`).
+Errors are `{"error": "<message>", "source": "<id>"}` with HTTP 502 on
+upstream failure, 400 on bad params, 404 on unknown source.
+
+### `GET /health`
+
+```json
+{"ok": true, "sources": ["reanime", "xanime"]}
+```
+
+### `GET /api/sources`
+
+```json
+[{"id": "xanime", "name": "Xanime", "language": "english"}]
+```
+
+### `GET /api/search?q=<query>&lang=<hindi|english|japanese|all>&source=<id|all>&page=1`
+
+Fans out to the matching sources in parallel threads and merges results.
+`lang` filter: `hindi` → only Hindi sources; `english` → only English
+sources; `japanese` → English sources, items whose `audio` contains `"sub"`
+(Japanese audio + subtitles); `all` → every source. A failing source does
+not kill the rest — it appears in `errors`.
+
+```sh
+curl "http://localhost:8000/api/search?q=naruto&lang=english"
+```
+
+```json
+{
+  "results": [
+    {"id": "naruto", "title": "Naruto", "poster": "https://...",
+     "year": 2002, "type": "anime", "audio": ["sub", "dub"], "source": "xanime"}
+  ],
+  "errors": []
+}
+```
+
+### `GET /api/trending|popular|latest?lang=&source=&page=1`
+
+Same fan-out shape as search, one section at a time.
+
+```sh
+curl "http://localhost:8000/api/trending?lang=english&source=xanime"
+curl "http://localhost:8000/api/popular?lang=all&page=2"
+```
+
+### `GET /api/anime?source=<id>&id=<item_id>`
+
+Details for one title. `id` is the source's own identifier from a
+search/home result (a slug for JSON sources, a full detail URL for HTML
+sources).
+
+```sh
+curl "http://localhost:8000/api/anime?source=xanime&id=naruto"
+```
+
+```json
+{
+  "id": "naruto", "title": "Naruto", "poster": "...", "banner": "...",
+  "plot": "...", "genres": ["Action"], "year": 2002,
+  "status": "completed", "score": 8.1,
+  "seasons": [
+    {"number": 1, "name": "Season 1", "episodes": [
+      {"number": 1, "title": "Episode 1", "data": "<opaque episode data>"}
+    ]},
+    {"number": 2, "name": "Dubbed", "episodes": [...]}
+  ]
+}
+```
+
+`episode.data` is an opaque string the website passes back unchanged to
+`/api/streams`. Its format is per-source — see the module docstring of each
+source (e.g. Xanime: `"<epId>|<sub|dub|raw>"`; Re:ANIME: a JSON string
+`{"slug","ep","lang","anilistId","tmdbId","season"}`).
+
+If a source has no real seasons it returns one season (`number: 1`,
+`name: "Season 1"`). If episodes split sub/dub with no seasons, sub
+episodes go in season 1 and dub episodes in season 2 named `"Dubbed"`.
+
+### `GET /api/streams?source=<id>&data=<episode_data>`
+
+```sh
+curl "http://localhost:8000/api/streams?source=xanime&data=<epId>%7Csub"
+```
+
+```json
+{
+  "streams": [
+    {"name": "Xanime", "url": "https://.../master.m3u8", "quality": 1080,
+     "type": "m3u8", "headers": {"User-Agent": "..."}, "proxy": false,
+     "label": "Xanime Server 1 (SUB)"}
+  ],
+  "subtitles": [{"label": "English", "url": "https://.../sub.vtt"}]
+}
+```
+
+`type` is `"m3u8"` or `"video"` (direct file). Streams are sorted best
+quality first when quality is known. `headers` are the Referer/User-Agent
+to play the URL with. If `proxy` is `true`, the URL will not play directly
+from the visitor's browser (hotlink protection / IP-bound token) — play it
+through `/api/proxy` instead.
+
+### `GET /api/proxy?url=<url-encoded>&ua=&referer=`
+
+Range-capable passthrough for hotlink-protected / IP-bound links. Forwards
+the client's `Range` header plus `User-Agent` / `Referer` from the `ua` /
+`referer` query params, and streams the upstream response back (including
+`Content-Range` so seeking works). `url` must start with `http://` or
+`https://`.
+
+```sh
+# Play a proxy=true stream from Re:ANIME through the API server:
+curl "http://localhost:8000/api/proxy?url=<url-encoded flixcloud file>&referer=https%3A%2F%2Fflixcloud.cc%2F" -o ep1.mkv
+```
+
+In a `<video>` / player, use the `/api/proxy?url=...` URL as the source
+instead of the raw stream URL.
+
+## How the website calls it
+
+Typical flow (all calls are plain GETs, no auth):
+
+1. **Home rows** — `GET /api/trending?lang=english`,
+   `GET /api/popular?lang=english`, `GET /api/latest?lang=english`.
+   Each returns `{"results": [...items...], "errors": [...]}`.
+2. **Search box** — `GET /api/search?q=<user text>&lang=<lang>`.
+3. **Detail page** — `GET /api/anime?source=<item.source>&id=<item.id>`
+   (URL-encode the id). Render seasons/episodes from the response.
+4. **Player** — `GET /api/streams?source=<id>&data=<episode.data>`
+   (URL-encode `data`). Pick the best stream; if `stream.proxy` is true,
+   set the player source to
+   `/api/proxy?url=<encodeURIComponent(stream.url)>` (+ `&ua=` /
+   `&referer=` from `stream.headers` when present), otherwise use
+   `stream.url` directly with `stream.headers`. Attach `subtitles` as
+   `<track>` elements.
+
+Example (JavaScript):
+
+```js
+const API = "http://localhost:8000"; // your deployed base URL in production
+
+async function searchAnime(q) {
+  const r = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}&lang=english`);
+  const { results, errors } = await r.json();
+  return results; // [{id, title, poster, year, type, audio, source}]
+}
+
+async function getStreams(source, episodeData) {
+  const r = await fetch(
+    `${API}/api/streams?source=${source}&data=${encodeURIComponent(episodeData)}`
+  );
+  const { streams, subtitles } = await r.json();
+  return streams.map((s) => ({
+    ...s,
+    playUrl: s.proxy
+      ? `${API}/api/proxy?url=${encodeURIComponent(s.url)}`
+          + (s.headers?.Referer ? `&referer=${encodeURIComponent(s.headers.Referer)}` : "")
+          + (s.headers?.["User-Agent"] ? `&ua=${encodeURIComponent(s.headers["User-Agent"])}` : "")
+      : s.url,
+  }));
+}
+```
+
+Notes for the website:
+
+- Treat `episode.data` as opaque — never parse or build it yourself; always
+  take it from a `/api/anime` response.
+- `lang=japanese` means "Japanese audio with subtitles" (English sources
+  filtered to subbed items).
+- Always handle the `errors` array on search/home — a source can be down
+  while the others still return results.
+- Never expose stream URLs' tokens: proxy=true URLs carry IP-bound tokens,
+  so route them through `/api/proxy` on your own server, never link them
+  directly.
+
+## How to add a new source
+
+1. Create `anime_api/sources/<id>.py` with a class subclassing
+   `anime_api.sources.base.Source`:
+
+   ```python
+   """<Site> source — what it ports, the site, episode data format."""
+   from anime_api.sources.base import Source
+
+   class MySource(Source):
+       id = "mysite"              # URL-safe, used in ?source=
+       name = "My Site"
+       language = "hindi"         # "hindi" | "english"
+       domain_key = "mysite"      # Firebase key ("" if none)
+       default_url = "https://mysite.example"
+
+       def search(self, query, page=1): ...
+       def home(self, section, page=1): ...   # trending|popular|latest
+       def details(self, item_id): ...
+       def streams(self, episode_data): ...
+   ```
+
+   The registry (`anime_api/sources/__init__.py`) auto-discovers the file —
+   no other file needs editing. `base_url` already resolves the live host
+   via the Firebase domain map (`resolve_domain(domain_key, default_url)`).
+
+2. Follow the return shapes in `INTERFACE.md` exactly (item dicts,
+   details dict with `seasons`, streams dict with `streams`/`subtitles`).
+   Return JSON-serializable dicts/lists only.
+3. Catch per-item errors inside each method — one bad card must not kill a
+   list. Put a timeout on every request (default 30s, 15s for link probes).
+   Never raise on a single bad server in `streams()` — collect what works.
+4. Keep the module importable without network access (network only inside
+   method calls). No credentials, no API keys. Document the episode `data`
+   format in the module docstring.
+5. Live-test it before finishing:
+
+   ```sh
+   ~/workspace/anime-api-work/venv/bin/python tests/test_live.py --source mysite
+   ```
+
+## Live testing
+
+```sh
+~/workspace/anime-api-work/venv/bin/python tests/test_live.py [--source <id>]
+```
+
+Runs each registered source's search/home/details/streams against the real
+sites and prints PASS/FAIL per endpoint with a one-line real-data summary.
+A source failing every endpoint is reported as DROPPED with the reason.
