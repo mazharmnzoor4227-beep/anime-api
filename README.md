@@ -21,7 +21,7 @@ anime-api/
 The shared contract every source follows lives in
 `INTERFACE.md` (in this repo).
 
-## Source status — live-tested 2026-11-18 (v1.4.1)
+## Source status — live-tested 2026-11-18 (v1.5.0)
 
 Full per-endpoint results: `TEST-REPORT.md` (81/90 endpoints passed).
 
@@ -42,6 +42,20 @@ Full per-endpoint results: `TEST-REPORT.md` (81/90 endpoints passed).
 | DramaCool (`dramacool`) | English | ✅ Working — K/C-drama English sub; search, home, details, streams (**direct HLS 720p**, `proxy=true`, `type: "hls"` — v1.4.1, no embeds) |
 | PKDramas (`pkdramas`) | Hindi | ⚠️ **Unplayable via this API** — catalogue (search/home/details) works, but `streams` is always empty: episodes are official YouTube uploads geo-blocked in India (server country), and embeds are never returned (v1.4.1) |
 | MovieBox (`moviebox`) | Hindi | ✅ Working — Hollywood/Hindi-dub movies; search, home, details, streams (MP4 360p–1080p, `proxy=true`); `hasResource: false` titles filtered out of results (v1.4.1) |
+| HentaiHaven (`hentaihaven`) | English | ✅ Working — adult animation (**18+, key-gated in the app, never in home/search rails**); search, details, streams (direct HLS m3u8, `proxy=true`, English Sub); via AniWorld `aniworld` backend (v1.5.0) |
+
+### v1.5 changes (2026-11-18) — HentaiHaven (18+, key-gated)
+
+New source, verified live from the Mumbai server before wiring (search
+`elf` → 9 results, details → 2 episodes, streams → HLS master via
+`/api/proxy` 200 + variant playlist 200):
+
+- **HentaiHaven** (`hentaihaven`, English, series) — AniWorld Downloader
+  backend (`aniworld` PyPI package, `query_hentaihaven` + `HentaiHavenSeries`
+  / `HentaiHavenEpisode.refresh_stream_url()`). Direct HLS master
+  (octopusmanifest.org `playlist.m3u8`, English audio + subtitles).
+  English Sub only — Hindi dub is NOT offered by this source.
+  Served ONLY behind the StreamHub app's key-gated adult section.
 
 ### v1.4 changes (2026-11-18) — catalog expansion + auto-update + MovieBox
 

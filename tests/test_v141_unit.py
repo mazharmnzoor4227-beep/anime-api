@@ -115,6 +115,40 @@ def _dc_direct_host_get(url, headers=None, timeout=30):
     return m
 
 
+DC_EPISODE_MULTI = """
+<html><body><iframe src="https://vidbasic.top/embed/wn23mfwnnmk"></iframe>
+<a href="https://hgcloud.to/e/exu5fvn2tqdg">Server HG</a>
+<a href="https://vidbasic.top/embed/n6bdpunded3">Server VB</a>
+</body></html>
+"""
+
+
+def _dc_multi_get(url, headers=None, timeout=30):
+    m = mock.Mock()
+    if "hanerix.com" in url:
+        m.text = DC_PLAYER_HTML
+    elif "vidbasic.top" in url:
+        # No direct file on the vidbasic pages (CryptoJS player).
+        m.text = "<html><body>vidbasic player, no file url</body></html>"
+    elif "hgcloud.to" in url:
+        m.text = HG_LOADING
+    else:
+        m.text = DC_EPISODE_MULTI
+    m.raise_for_status = mock.Mock()
+    return m
+
+
+with mock.patch("anime_api.sources.dramacool.get",
+                side_effect=_dc_multi_get):
+    s = dc.streams("https://dramaacool.best/drama/pieces-of-guilt/episode-1")
+    check("dc streams skips unresolvable vidbasic, resolves hgcloud next",
+          len(s["streams"]) == 1
+          and s["streams"][0]["url"] == DC_DIRECT
+          and s["streams"][0]["type"] == "hls"
+          and s["streams"][0]["proxy"] is True,
+          repr(s["streams"]))
+
+
 with mock.patch("anime_api.sources.dramacool.get",
                 side_effect=_dc_direct_host_get):
     direct = dc._direct_from_embed(

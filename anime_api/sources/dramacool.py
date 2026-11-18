@@ -55,9 +55,11 @@ segment 200 (video/MP2T, 1,302,840 bytes) through ``/api/proxy``
 with the player Referer (direct fetch without it 404s).
 """
 
+import base64
+import html
 import json
 import re
-from urllib.parse import quote_plus, urljoin, urlsplit
+from urllib.parse import quote_plus, unquote, urljoin, urlsplit
 
 import json
 import re
@@ -75,7 +77,8 @@ _EPISODE_RE = re.compile(r"^/drama/[a-z0-9][a-z0-9\-]*/episode-(\d+)/?$")
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 _EMBED_RE = re.compile(
     r"https?://[a-z0-9.\-]*(?:vidmoly|streamtape|dood|filemoon|voe|mixdrop"
-    r"|upstream|streamwish|vidhide|filelions)\.[a-z]{2,10}/[^\s\"'<>]+",
+    r"|upstream|streamwish|vidhide|filelions|vidbasic|hgcloud|hglink"
+    r"|dhcplay)\.[a-z]{2,10}/[^\s\"'<>]+",
     re.IGNORECASE,
 )
 
@@ -91,6 +94,17 @@ _REDIRECT_HOSTS = ("hglink.to", "hgcloud.to", "dhcplay.com")
 _MAIN_HOSTS = ("hanerix.com", "audinifer.com", "vibuxer.com")
 _PACKER_MARKER = "eval(function(p,a,c,k,e,d){"
 
+# vidbasic 3rd-party player (deobfuscated 2026-11-18): the file URL
+# is AES-256-CBC encrypted in the player page's
+# <script data-name="crypto" data-value="..."> (the same base64 value
+# is also the player URL's ?key= param). The key/iv below are the
+# player page's own public constants (visible in its JS) — if the
+# player rotates them, vidbasic extraction breaks and they must be
+# re-derived from the live player JS.
+_VB_KEY = b"94588293375053432799222445521289"
+_VB_IV = b"5259228356829423"
+_VB_CRYPTO_RE = re.compile(
+    r"""data-name=['"]crypto['"][^>]*data-value=['"]([^'"]+)""")
 _FILE_RE = re.compile(r"""file\s*:\s*["'](https?://[^"']+)["']""")
 _MEDIA_RE = re.compile(
     r"https?://[^\s\"'<>]+\.(?:m3u8|mp4|txt)\b[^\s\"'<>]*")
@@ -333,7 +347,65 @@ def _unpack_packer(html):
     return unpacked
 
 
-def _extract_file_url(html):
+def _vb_decrypt(cipher_b64):
+    """AES-256-CBC decrypt a vidbasic crypto payload -> file URL or None."""
+    try:
+        from cryptography.hazmat.primitives.ciphers import (
+            Cipher, algorithms, modes)
+        raw = base64.b64decode(cipher_b64)
+        cipher = Cipher(algorithms.AES(_VB_KEY), modes.CBC(_VB_IV))
+        dec = cipher.decryptor()
+        plain = dec.update(raw) + dec.finalize()
+        pad = plain[-1]
+        if 0 < pad <= 16:
+            plain = plain[:-pad]
+        return plain.decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+
+
+def _episode_stream_urls(page_html, ep_url):
+    """This episode's server URLs from the page's embedded episodes JSON.
+
+    The episode page carries a JSON blob with one entry per episode
+    (``"episodes":[{"number":1,"streamUrls":[{"source":...,"url":...},
+    ...]}, ...]``). Only the CURRENT episode's URLs are returned —
+    the page also matches the site-wide embed regex for every other
+    episode, and playing another episode's server would be the wrong
+    content. Returns [] when the blob is absent/unparseable.
+    """
+    num = None
+    m = re.search(r"/episode-(\d+)", ep_url or "")
+    if m:
+        try:
+            num = int(m.group(1))
+        except ValueError:
+            num = None
+    at = page_html.find('"episodes":[')
+    if at < 0:
+        return []
+    try:
+        arr, _ = json.JSONDecoder().raw_decode(
+            page_html[at + len('"episodes":'):])
+    except Exception:
+        return []
+    if not isinstance(arr, list):
+        return []
+    for entry in arr:
+        if not isinstance(entry, dict):
+            continue
+        if num is not None and entry.get("number") != num:
+            continue
+        urls = []
+        for s in entry.get("streamUrls") or []:
+            u = (s or {}).get("url") or ""
+            if u.startswith("http") and u not in urls:
+                urls.append(u)
+        if urls:
+            return urls
+        if num is None:
+            break
+    return []
     """Direct media URL out of a player page -> (url, quality) or None.
 
     Tries a plain ``file: "https://...m3u8"`` first, then the same
@@ -617,6 +689,66 @@ class DramaCool(Source):
             }],
         }
 
+    def _direct_from_vidbasic(self, embed_url, ep_url):
+        """vidbasic embed -> direct HLS/MP4 via its AES 3rd-party player.
+
+        ``/embed/<id>`` loads ``/3rdplayer.html?key=<cipher>&id=<id>``;
+        the player page carries the same base64 ciphertext in
+        ``<script data-name="crypto" data-value="...">``; AES-256-CBC
+        decrypting it (player constants ``_VB_KEY``/``_VB_IV``) yields
+        the direct ``index.m3u8`` URL. Verified live 2026-11-18
+        ("Pieces of Guilt" ep 1 -> ``https://hls.vidbasic.top/
+        1f412d05-.../index.m3u8``; master 200 + variant 200 + first
+        segment 200 fMP4 through ``/api/proxy``, no Referer needed).
+        """
+        try:
+            resp = get(embed_url, headers={"Referer": ep_url}, timeout=15)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+        except Exception:
+            return None
+        player_url = None
+        iframe = soup.select_one("iframe[src*='3rdplayer.html']")
+        if iframe and iframe.get("src"):
+            player_url = urljoin(embed_url, iframe.get("src").strip())
+        if not player_url:
+            m = re.search(r'data-video="([^"]*3rdplayer\.html[^"]*)"',
+                          resp.text)
+            if m:
+                player_url = urljoin(embed_url, html.unescape(m.group(1)))
+        if not player_url:
+            return None
+        try:
+            resp = get(player_url, headers={"Referer": embed_url},
+                       timeout=15)
+            resp.raise_for_status()
+        except Exception:
+            return None
+        cipher_b64 = None
+        m = _VB_CRYPTO_RE.search(resp.text)
+        if m:
+            cipher_b64 = m.group(1)
+        if not cipher_b64:
+            m = re.search(r"[?&]key=([^&\s\"']+)", player_url)
+            if m:
+                cipher_b64 = unquote(m.group(1))
+        if not cipher_b64:
+            return None
+        file_url = _vb_decrypt(cipher_b64)
+        if not file_url or not file_url.startswith("http"):
+            return None
+        is_hls = ".m3u8" in file_url
+        return {
+            "name": "DramaCool",
+            "url": file_url,
+            "quality": None,
+            "type": "hls" if is_hls else "video",
+            "headers": {"Referer": player_url,
+                        "User-Agent": BROWSER_UA},
+            "proxy": True,
+            "label": "DramaCool Player",
+        }
+
     def _direct_from_embed(self, embed_url, ep_url):
         """One embed URL -> direct HLS stream dict, or None.
 
@@ -627,6 +759,12 @@ class DramaCool(Source):
         block is unpacked for the direct file URL. The CDN 404s
         without the player-page Referer, so the stream carries it.
         """
+        try:
+            host = urlsplit(embed_url).hostname or ""
+        except Exception:
+            host = ""
+        if host == "vidbasic.top":
+            return self._direct_from_vidbasic(embed_url, ep_url)
         candidates = [embed_url]
         try:
             parts = urlsplit(embed_url)
@@ -684,12 +822,24 @@ class DramaCool(Source):
             if src.startswith("http") and src not in seen:
                 seen.add(src)
                 urls.append(src)
-        for href in _EMBED_RE.findall(resp.text):
+        # The page's embedded episodes JSON lists THIS episode's
+        # servers exactly (the site-wide embed regex also matches
+        # every other episode's servers — never use those).
+        for href in _episode_stream_urls(resp.text, ep_url):
             if href not in seen:
                 seen.add(href)
                 urls.append(href)
+        if not urls:
+            for href in _EMBED_RE.findall(resp.text):
+                if href not in seen:
+                    seen.add(href)
+                    urls.append(href)
         streams = []
-        for url in urls[:3]:
+        # The episode page lists several servers (hgcloud, hglink,
+        # vidbasic, mixdrop, dood, ...); try each in order until one
+        # yields a direct file. Servers this module cannot resolve
+        # (e.g. mixdrop/dood) are skipped, never returned as embeds.
+        for url in urls[:6]:
             direct = self._direct_from_embed(url, ep_url)
             if direct:
                 streams.append(direct)
