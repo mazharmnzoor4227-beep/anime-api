@@ -12,6 +12,10 @@ Routes (all JSON, CORS enabled) — see INTERFACE.md and README.md:
   GET /api/widgets
   GET /api/proxy?url=&ua=&referer=   (Range-capable passthrough)
 
+v1.4: 30-min background refresh job (all sources, all categories) so
+new releases appear with no redeploy; /health reports the refresh
+state (runs, last_run, last_items, last_errors).
+
 v1.2 speed work: response cache (X-Cache: HIT/MISS), pre-warm thread,
 fast-fail fan-out (a slow source is listed in ``errors``, never gates).
 v1.3: movie sources (media_type="movie") + kdrama category; /api/movies
@@ -36,7 +40,8 @@ from anime_api.config import (CACHE_TTL_DETAILS_SECONDS,
                               CACHE_TTL_STREAMS_SECONDS,
                               CACHE_TTL_WIDGETS_SECONDS,
                               FANOUT_TIMEOUT_SECONDS, HOST, PORT,
-                              PREWARM_INTERVAL_SECONDS)
+                              PREWARM_INTERVAL_SECONDS,
+                              REFRESH_INTERVAL_SECONDS)
 from anime_api.http import BROWSER_UA
 from anime_api.sources import get_source, list_sources
 
@@ -220,6 +225,12 @@ def _prewarm_once():
         ("latest", "hindi", "all", 1, None, "movie"),
         ("latest", "all", "all", 1, None, "movie"),
         ("latest", "all", "all", 1, "kdrama", "all"),
+        ("latest", "all", "all", 1, "cdrama", "all"),
+        ("latest", "all", "all", 1, "pakistani", "all"),
+        ("latest", "hindi", "all", 1, "pakistani", "all"),
+        ("latest", "all", "all", 1, "hollywood", "all"),
+        ("latest", "all", "all", 1, "bollywood", "all"),
+        ("latest", "all", "all", 1, "movies", "all"),
     ]
     for section, lang, source_param, page, category, media_type in jobs:
         key = _cache_key("list", section, lang, source_param, page,
@@ -232,6 +243,96 @@ def _prewarm_once():
                           CACHE_TTL_LIST_SECONDS)
         except Exception:
             continue
+
+
+# ------------------------------------------------------------------ auto-update
+# v1.4: the 30-minute background refresh job. The 5-min pre-warm keeps
+# the HOT keys fresh; this job sweeps EVERYTHING — all sections x langs
+# x types, every category any source declares, and every source's own
+# latest key — so a new release on ANY source appears in the API
+# (and therefore the app/website) by itself, with no redeploy and no
+# manual step. Runs in its own daemon thread; state is observable via
+# /health ("refresh") and a REFRESH log line per run.
+
+REFRESH_STATE = {
+    "runs": 0,
+    "last_run": None,          # ISO-8601 UTC timestamp of the last run
+    "last_duration_s": None,
+    "last_items": 0,           # items refreshed (summed over all keys)
+    "last_errors": 0,          # sources that errored across the sweep
+}
+
+
+def _refresh_jobs():
+    """Every (section, lang, source, page, category, type) combo to refresh."""
+    jobs = []
+    for section in ("trending", "popular", "latest"):
+        for lang in ("all", "hindi", "english"):
+            jobs.append((section, lang, "all", 1, None, "all"))
+            jobs.append((section, lang, "all", 1, None, "movie"))
+    categories = set()
+    for src in list_sources():
+        categories.update(getattr(src, "categories", ()) or ())
+    for section in ("trending", "popular", "latest"):
+        for category in sorted(categories):
+            jobs.append((section, "all", "all", 1, category, "all"))
+    for src in list_sources():
+        jobs.append(("latest", "all", src.id, 1, None, "all"))
+    return jobs
+
+
+def _refresh_once():
+    """One full sweep; returns (items, errors) and updates REFRESH_STATE."""
+    import datetime
+    started = time.monotonic()
+    total_items, total_errors = 0, 0
+    for section, lang, source_param, page, category, media_type in \
+            _refresh_jobs():
+        key = _cache_key("list", section, lang, source_param, page,
+                         category or "", media_type)
+        try:
+            items, errors = _compute_list(
+                section, lang, source_param, page, category, media_type)
+            if items is None:
+                continue
+            total_items += len(items)
+            total_errors += len(errors)
+            CACHE.set(key, {"results": items, "errors": errors},
+                      CACHE_TTL_LIST_SECONDS)
+        except Exception:
+            total_errors += 1
+            continue
+    duration = time.monotonic() - started
+    REFRESH_STATE["runs"] += 1
+    REFRESH_STATE["last_run"] = (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat().replace("+00:00", "Z"))
+    REFRESH_STATE["last_duration_s"] = round(duration, 2)
+    REFRESH_STATE["last_items"] = total_items
+    REFRESH_STATE["last_errors"] = total_errors
+    print("REFRESH run=%d items=%d errors=%d duration=%.1fs"
+          % (REFRESH_STATE["runs"], total_items, total_errors, duration),
+          flush=True)
+    return total_items, total_errors
+
+
+def _refresh_loop():
+    # First sweep shortly after startup (warms the per-source and
+    # per-category keys the pre-warm does not cover), then every
+    # REFRESH_INTERVAL_SECONDS.
+    time.sleep(10)
+    while True:
+        try:
+            _refresh_once()
+        except Exception:
+            pass
+        time.sleep(REFRESH_INTERVAL_SECONDS)
+
+
+def _start_refresh():
+    t = threading.Thread(target=_refresh_loop, daemon=True,
+                         name="api-refresh")
+    t.start()
 
 
 def _prewarm_loop():
@@ -251,7 +352,13 @@ def _start_prewarm():
 
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "sources": [s.id for s in list_sources()]})
+    return jsonify({
+        "ok": True,
+        "sources": [s.id for s in list_sources()],
+        "refresh": dict(REFRESH_STATE),
+        "prewarm_interval_s": PREWARM_INTERVAL_SECONDS,
+        "refresh_interval_s": REFRESH_INTERVAL_SECONDS,
+    })
 
 
 @app.route("/api/sources")
@@ -574,4 +681,5 @@ def api_proxy():
 
 if __name__ == "__main__":
     _start_prewarm()
+    _start_refresh()
     app.run(host=HOST, port=PORT, debug=False, threaded=True)

@@ -250,8 +250,8 @@ check("registry: animedekho listed",
       "animedekho" in [s.id for s in list_sources()])
 reg = get_source("animedekho")
 check("registry: language hindi", reg is not None and reg.language == "hindi")
-check("registry: 12 sources total (v1.3: +vegamovies, multimovies, indstream, ckdub)",
-      len(list_sources()) == 12,
+check("registry: 15 sources total (v1.4: +dramacool, pkdramas, moviebox)",
+      len(list_sources()) == 15,
       str([s.id for s in list_sources()]))
 
 print()

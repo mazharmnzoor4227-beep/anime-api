@@ -1,7 +1,109 @@
 # anime-api — live test report
 
 Date: 2026-11-18 (PKT). Run: `tests/test_live.py` (all sources, real sites).
-Result: **66/72 endpoints passed** — 11 of 12 sources fully working, 1 dropped.
+Result: **81/90 endpoints passed** — 13 of 15 sources fully working, 1 dropped, 1 query artifact.
+
+## v1.4 — catalog expansion + auto-update + MovieBox, verified live on the deployed server (Oracle Mumbai)
+
+Unit suites: cache 13/13, animedekho 34/34, hindi 46/46,
+proxy-rewrite 16/16, movies 47/47, v14 25/25 (new), moviebox 17/17 (new)
+— **198/198, no regressions**.
+
+Live suites: full `tests/test_live.py` **81/90** (was 66/72); movies
+`tests/test_movies_live.py` **25/25**; hindi `tests/test_hindi_live.py`
+**3/8** (animeworld 3/4, rareanimes 0/4 — see below); moviebox
+`tests/test_moviebox_live.py` **9/9**; v14 `tests/test_v14_live.py`
+**17/17**. The 9 failures in the full suite are RareAnimes 0/6
+(markup drift, unchanged since v1.1) and PKDramas 3/6 — the generic
+suite searches "naruto", which a Pakistani-drama catalogue does not
+carry (its own live test with "tere bin" is 7/7). AnimeWorld search
+"naruto" works (2 items); only its "naruto hindi" query returns 0.
+
+### Per-source verification (live, from the server IP, before wiring)
+
+| Source | search | home | details | streams | Verdict |
+|---|---|---|---|---|---|
+| dramacool | 10 items, first "Boys Over Flowers Season 2" | 30–102/section | 1 season, 11 eps ("Blossom in Darkness (2026)") | 4 streams, vidmoly `embed` (page 200, 71,870 bytes) | ✅ 7/7 |
+| pkdramas | 6 items, first "Tere Bin Har Pal Geo" | 20–48/section | 1 season, 50 eps ("Tere Bin") | 1 stream, YouTube `embed/FOayEzY3C3o` (page 200, 149,554 bytes) | ✅ 7/7 |
+| moviebox | 18 items, first "The Avengers"; "avengers hindi" → 5 Hindi of 11 | 5–20/section; hollywood 18 | 1 season, 1 ep, dubs=4 | 4 streams, MP4 1080p first, 28 subtitles; Range GET 206 + `ftyp` | ✅ 9/9 |
+| kdrama category | — | 30 items, first "The Substitute" (dramacool) | — | — | ✅ |
+| cdrama category | — | 30 items, first "The Confession Truth" (dramacool) | — | — | ✅ |
+| pakistani category | — | 20 items (pkdramas) | — | — | ✅ |
+| hollywood category | — | 18 items, first "Avengers Endgame: Encore [Hindi]" (moviebox) | — | — | ✅ |
+
+Verification notes:
+- DramaCool: the site is an Angular SPA — `/search?q=` returns the app
+  shell with no cards, and `api.dramacool.rest` 403s Cloudflare for
+  plain server-side GETs (even with browser Referer/Origin). The search
+  page embeds the API's own response in an Angular HTTP transfer-cache
+  record (`"b":{"currentPage":1,...,"body":[...]}`, 10/page, 139 total
+  for "boys"); search parses that record. Home cards: 102 items on `/`,
+  30 on `/explore`; the first version returned status badges
+  ("Completed"/"Ongoing") as titles and search returned 0 — both fixed
+  live (alt-preferred titles, EP/time stripping, `"b":{"body":...}`
+  shape). `dramacool.surf` is a static SEO doorway (anchor links only,
+  `/search` 404) — rejected.
+- PKDramas: search `/search?q=tere+bin` → 6 items; detail "Tere Bin"
+  → 50 episodes; episode 9 page carries `videoId FOayEzY3C3o` in the
+  escaped RSC payload + JSON-LD `embedUrl` (the first version missed it
+  because the quotes are backslash-escaped). Hurmat detail → 15 episode
+  links (absolute `https://pkdramas.com/...` hrefs, normalised before
+  matching). Streams are official YouTube uploads; the site hosts no
+  video itself.
+- MovieBox: full evaluation in `MOVIEBOX-EVALUATION.md`. Simatwa's
+  `moviebox-api` (Option A as first named) is an empty PyPI stub with a
+  dead repo — the port implements the app backend natively. Search
+  "avengers" → 18 items; H5 play for The Avengers → 4 MP4s (360p–1080p)
+  + 1 DASH; 1080p MP4 HEADs 200 only with `Referer:
+  https://movie-box.co/` (429 without); Range GET 0–262143 → 206 with
+  `ftyp`. Hindi-dub movie "The Avengers [Hindi]" → 2 MP4s, same 206 +
+  `ftyp`. Series do NOT play via the guest path (`hasResource: false`
+  for Squid Game [Hindi] / Breaking Bad [Hindi]) — movies only.
+  DASH host 429s from the server IP — not emitted. Native `play-info`
+  returns a 23s preview clip for every title — never used.
+- Rejected this round: hdhub4u (WordPress REST disabled for guests,
+  JS-rendered grid, search redirects to homepage), hianime.to (521),
+  animekai.to (connection reset), myasiantv.cx (410), KissKH (403
+  Cloudflare). No new anime source verified; no additional Hollywood
+  source beyond MovieBox + the existing movie sources.
+
+### Auto-update (Task 2) — 30-minute refresh job
+
+`_refresh_jobs()` builds >50 jobs (sections × langs × types + every
+declared category + per-source latest keys). `_refresh_once()` sweeps
+them all into the cache and updates `REFRESH_STATE` (runs, last_run,
+last_duration_s, last_items, last_errors); `_refresh_loop()` runs the
+first sweep 10s after startup, then every 1800s. `/health` exposes the
+state (see README). Verified after deploy (see "Server timings" below):
+refresh runs increment and the new sources' titles appear through
+`/api/latest` with no redeploy.
+
+### Server timings (curl, direct to 127.0.0.1:8000), before → after
+
+v1.3 baseline → v1.4 (same server, same method):
+- trending (all): 324 items, 0.003s warm (unchanged)
+- latest hindi: 184 items, 0.002s warm (unchanged)
+- movies latest hindi: 112 items → **~130 items, 0.002s warm**
+  (moviebox now included)
+- latest kdrama: 39 items → **69 items, 0.002s warm** (ckdub 39 + dramacool 30)
+- latest cdrama (new): **30 items, 0.002s warm** (dramacool)
+- latest pakistani (new): **20 items, 0.002s warm** (pkdramas)
+- latest hollywood (new): **18 items, 0.002s warm** (moviebox)
+- search "avengers" type=movie: 26 items → **~37 items, 0.54s cold**
+  (moviebox adds 11 Hindi-dub titles)
+- live suite: **81/90** (was 66/72) — only RareAnimes drops + the
+  pkdramas "naruto" query artifact.
+
+### Contract fixes (frontend report, verified live after deploy)
+
+- `GET /api/latest?lang=hindi&category=kdrama` returns CKDub + DramaCool
+  items; `category=cdrama` returns DramaCool only; `category=pakistani`
+  returns PKDramas only; `category=hollywood` returns MovieBox only.
+- `GET /api/title?source=moviebox&id=5154075108704669480` returns The
+  Avengers with `dubs` (4 audio versions as their own subjectIds).
+- `GET /api/streams?source=moviebox&data={...}` returns 4 MP4 streams
+  (`proxy: true`) + subtitles; the 1080p MP4 plays its first frame
+  through `/api/proxy` (Range 206 + `ftyp`, verified live).
 
 ## v1.3 — Hindi-dub movies + K-drama, verified live on the deployed server (Oracle Mumbai)
 

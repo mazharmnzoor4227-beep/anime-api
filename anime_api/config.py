@@ -29,3 +29,11 @@ CACHE_TTL_WIDGETS_SECONDS = 1800   # /api/widgets (site sidebar)
 
 # Pre-warm: refresh the hot list keys this often (seconds).
 PREWARM_INTERVAL_SECONDS = 300
+
+# Auto-update (v1.4): background refresh job — every 30 minutes it
+# re-fetches latest/trending per source (ALL sources, ALL categories)
+# and rewrites the list caches, so new releases appear in the app /
+# website automatically with no redeploy and no manual step. List
+# TTLs stay short (10 min) so the site always shows fresh titles;
+# the refresh keeps the cache warm so users get fresh + fast.
+REFRESH_INTERVAL_SECONDS = 1800

@@ -21,9 +21,9 @@ anime-api/
 The shared contract every source follows lives in
 `INTERFACE.md` (in this repo).
 
-## Source status — live-tested 2026-11-18 (v1.3)
+## Source status — live-tested 2026-11-18 (v1.4)
 
-Full per-endpoint results: `TEST-REPORT.md` (66/72 endpoints passed).
+Full per-endpoint results: `TEST-REPORT.md` (81/90 endpoints passed).
 
 | Source | Language | Status |
 |---|---|---|
@@ -39,6 +39,88 @@ Full per-endpoint results: `TEST-REPORT.md` (66/72 endpoints passed).
 | Multimovies (`multimovies`) | Hindi | ✅ Working — search, home, details, streams (Cineverse m3u8 1080p, Hindi audio default) |
 | IndStream (`indstream`) | Hindi | ✅ Working — search, home, details, streams (Vidly m3u8 1080p, Hindi audio track) |
 | CKDub (`ckdub`) | Hindi | ✅ Working — K-drama Hindi dub; search, home, details, streams (`embed` player) |
+| DramaCool (`dramacool`) | English | ✅ Working — K/C-drama English sub; search, home, details, streams (`embed` player) |
+| PKDramas (`pkdramas`) | Hindi | ✅ Working — Pakistani dramas, official YouTube embeds; search, home, details, streams |
+| MovieBox (`moviebox`) | Hindi | ✅ Working — Hollywood/Hindi-dub movies; search, home, details, streams (MP4 360p–1080p, `proxy=true`) |
+
+### v1.4 changes (2026-11-18) — catalog expansion + auto-update + MovieBox
+
+New sources (all verified live from the Mumbai server before wiring;
+see `TEST-REPORT.md` for the per-source verification, and
+`MOVIEBOX-EVALUATION.md` for the MovieBox research):
+
+- **DramaCool** (`dramacool`, English, series, categories `kdrama` /
+  `cdrama`) — `dramaacool.best` (the `dramacool.surf` domain is a static
+  SEO doorway with no catalogue — not used). Home/details/streams parse
+  the HTML cards; search parses the Angular SSR transfer-cache record
+  embedded in `/search?q=` (the `api.dramacool.rest` endpoint 403s
+  behind Cloudflare for plain server-side GETs, but the page embeds its
+  own response). Card titles come from the poster img `alt` (SEO spam
+  unwrapped); link text is only a fallback, and bare status badges
+  ("Completed"/"Ongoing") plus "EP 11 … 3h ago" affixes are stripped —
+  the first version returned badge words as titles. Streams are the
+  episode page's video-host `<iframe>` (vidmoly etc.) as `embed`.
+- **PKDramas** (`pkdramas`, Hindi/Urdu, series, category `pakistani`) —
+  `pkdramas.com` catalogues Pakistani serials (Hum TV, ARY Digital,
+  Har Pal Geo, …) and plays each episode from the broadcaster's
+  official YouTube upload. The video id lives in the Next.js RSC
+  payload with escaped quotes (`\"videoId\":\"...\"`) and in the
+  JSON-LD `embedUrl` — both are tried. Episode links are absolute on
+  some drama pages (no `www`), so hrefs are normalised to site paths
+  before matching. Streams are `https://www.youtube.com/embed/<id>`
+  (`embed`, `proxy: false`).
+- **MovieBox** (`moviebox`, Hindi, movie, categories `hollywood` /
+  `bollywood` / `movies`) — the MovieBox app backend (`api3.aoneroom.com`
+  native BFF + H5 play on `movie-box.co`), signed requests
+  (HMAC-MD5, bootstrap Bearer token from the `x-user` header). **The
+  Simatwa `moviebox-api` library (Option A as first named) was evaluated
+  and is NOT usable: its GitHub repo is unreachable and its only PyPI
+  release (0.6.0) is an empty 58-byte stub requiring Python ≥3.14 —
+  so the protocol was ported natively (see `MOVIEBOX-EVALUATION.md`).
+  Movies only (`subjectType == 1`): series return `hasResource: false`
+  from the guest H5 play path, so they are filtered from search/home.
+  Streams are full-length MP4s (360p–1080p, `proxy: true` with a
+  `Referer: https://movie-box.co/` — the CDN 429s without it) plus up
+  to 28 subtitles. **Hindi-dub truth:** Hollywood Hindi-dub movies
+  play ("The Avengers [Hindi]" → 2 MP4s, Range 206 + `ftyp`); Hindi-dub
+  K-drama and Pakistani drama *subjects* exist in the catalogue but are
+  series and do NOT play via the guest path — those still come from
+  CKDub/DramaCool and PKDramas. DASH is not emitted (its host 429s
+  from the server IP); the native `play-info` endpoint is a 23-second
+  preview trap and is never used.
+
+**Auto-update (Task 2):** the 5-minute pre-warm is now joined by a
+**30-minute background refresh job** (`REFRESH_INTERVAL_SECONDS =
+1800`): every 30 minutes it sweeps latest/trending/popular for every
+lang × type, every declared category, and every source's latest key
+(>50 jobs) and rewrites the cache, so new releases appear in the app
+with no redeploy and no manual step. `GET /health` now reports
+`{"refresh": {"runs", "last_run", "last_duration_s", "last_items",
+"last_errors"}, "refresh_interval_s": 1800, "prewarm_interval_s": 300}`.
+
+**Fixes found by live-testing the new code (not by reading it):**
+MovieBox POSTs 407'd "Signature invalid" because `post_json`
+re-serialises the body with spaces — the module now sends the exact
+compact string that was signed (unit test asserts the bytes).
+DramaCool search returned 0 until the SSR record's real shape
+(`"b":{"body":[...]}` paginated object, not a bare array) was read
+from the page. PKDramas streams returned 0 until the escaped RSC
+`videoId` and absolute episode hrefs were handled.
+
+- Tests: **198/198 unit** (13 cache + 34 animedekho + 46 hindi + 16
+  proxy-rewrite + 47 movies + 25 v14 + 17 moviebox, new). Live suite:
+  **81/90** (was 66/72) — the 9 failures are RareAnimes 0/6 (markup
+  drift, unchanged) and PKDramas 3/6 only because the generic suite
+  searches "naruto", which a Pakistani-drama catalogue does not carry
+  (its own live test with "tere bin" is 7/7); movies live 25/25,
+  moviebox live 9/9, v14 live 17/17.
+
+Rejected (not wired, with reasons — see `TEST-REPORT.md`):
+dramacool.surf (SEO doorway, no catalogue), hdhub4u (WordPress REST
+disabled, JS-rendered grid), hianime.to (521), animekai.to (connection
+reset), myasiantv.cx (410), KissKH (403 Cloudflare). No new anime
+source verified; no additional Hollywood source beyond MovieBox +
+the existing movie sources.
 
 ### v1.3 changes (2026-11-18) — Hindi-dub MOVIES + K-drama
 
@@ -302,7 +384,10 @@ upstream failure, 400 on bad params, 404 on unknown source.
 ### `GET /health`
 
 ```json
-{"ok": true, "sources": ["reanime", "xanime"]}
+{"ok": true, "sources": ["reanime", "xanime"],
+ "refresh": {"runs": 3, "last_run": "2026-11-18T11:00:00",
+             "last_duration_s": 12.4, "last_items": 54, "last_errors": 0},
+ "prewarm_interval_s": 300, "refresh_interval_s": 1800}
 ```
 
 ### `GET /api/sources`
@@ -345,10 +430,10 @@ curl "http://localhost:8000/api/popular?lang=all&page=2"
 curl "http://localhost:8000/api/latest?lang=hindi&category=kdrama"
 ```
 
-### `GET /api/movies?lang=&source=&page=1&section=latest` (v1.3)
+### `GET /api/movies?lang=&source=&page=1&section=latest` (v1.3, +moviebox in v1.4)
 
 Movie lists — the same fan-out, but only over movie sources
-(`vegamovies`, `multimovies`, `indstream`). `section` picks the row
+(`vegamovies`, `multimovies`, `indstream`, `moviebox`). `section` picks the row
 (`latest` default, `trending`, `popular`).
 
 ```sh

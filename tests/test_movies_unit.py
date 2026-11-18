@@ -430,7 +430,10 @@ from anime_api.sources.anikoto import AniKoto  # noqa: E402
 from anime_api.sources.animedekho import AnimeDekho  # noqa: E402
 from anime_api.sources.animeworld import AnimeWorld  # noqa: E402
 from anime_api.sources.anisuge import AniSugeSource  # noqa: E402
+from anime_api.sources.dramacool import DramaCool  # noqa: E402
+from anime_api.sources.moviebox import MovieBox  # noqa: E402
 from anime_api.sources.nineanime import NineAnime  # noqa: E402
+from anime_api.sources.pkdramas import PKDramas  # noqa: E402
 from anime_api.sources.rareanimes import RareAnimes  # noqa: E402
 from anime_api.sources.reanime import ReanimeSource  # noqa: E402
 from anime_api.sources.xanime import XanimeSource  # noqa: E402
@@ -438,7 +441,8 @@ from app import app  # noqa: E402
 
 _ALL_SOURCES = [Vegamovies, Multimovies, IndStream, CKDub, AnimeDekho,
                 AnimeWorld, RareAnimes, XanimeSource, ReanimeSource,
-                NineAnime, AniKoto, AniSugeSource]
+                NineAnime, AniKoto, AniSugeSource, DramaCool, PKDramas,
+                MovieBox]
 
 client = app.test_client()
 
@@ -500,17 +504,27 @@ with ExitStack() as stack:
           and any("xanime" in e.get("error", "") for e in body["errors"]),
           repr(body))
 
+from anime_api.sources.ckdub import CKDub  # noqa: E402
+
 with mock.patch.object(CKDub, "home",
                        lambda self, section, page=1, category=None:
                        [{"id": "https://www.ckdub.com/drama/x", "title": "Drama X",
                          "poster": None, "year": None, "type": "anime",
                          "audio": ["dub"], "source": "ckdub"}]
-                       if category == "kdrama" else []):
+                       if category == "kdrama" else []), \
+        mock.patch.object(DramaCool, "home",
+                          lambda self, section, page=1, category=None:
+                          [{"id": "https://dramaacool.best/drama/y",
+                            "title": "Drama Y", "poster": None,
+                            "year": None, "type": "anime",
+                            "audio": ["sub"], "source": "dramacool"}]
+                          if category == "kdrama" else []):
     r = client.get("/api/latest?category=kdrama")
     body = r.get_json()
-    check("GET /api/latest?category=kdrama fans out to ckdub",
-          r.status_code == 200 and len(body["results"]) == 1
-          and body["results"][0]["source"] == "ckdub", repr(body))
+    check("GET /api/latest?category=kdrama fans out to ckdub+dramacool",
+          r.status_code == 200 and len(body["results"]) == 2
+          and {it["source"] for it in body["results"]}
+          == {"ckdub", "dramacool"}, repr(body))
 
 with mock.patch("anime_api.sources.animedekho.AnimeDekho.home",
                 lambda self, section, page=1, category=None:
