@@ -74,23 +74,28 @@ declared category + per-source latest keys). `_refresh_once()` sweeps
 them all into the cache and updates `REFRESH_STATE` (runs, last_run,
 last_duration_s, last_items, last_errors); `_refresh_loop()` runs the
 first sweep 10s after startup, then every 1800s. `/health` exposes the
-state (see README). Verified after deploy (see "Server timings" below):
-refresh runs increment and the new sources' titles appear through
-`/api/latest` with no redeploy.
+state (see README). **Verified after deploy:** first sweep 10s after
+startup — `REFRESH run=1 items=4531 errors=0 duration=34.3s` (journal
++ `/health`: `runs: 1`, `last_run: 2026-11-18T11:47:55Z`,
+`last_duration_s: 34.34`, `last_items: 4531`, `last_errors: 0`).
+Post-refresh titles through the live API: hollywood → "Avengers
+Endgame: Encore [Hindi]" (moviebox), cdrama → "The Confession Truth"
+(dramacool), pakistani → "Good Morning Pakistan ARY Digital"
+(pkdramas).
 
 ### Server timings (curl, direct to 127.0.0.1:8000), before → after
 
 v1.3 baseline → v1.4 (same server, same method):
-- trending (all): 324 items, 0.003s warm (unchanged)
-- latest hindi: 184 items, 0.002s warm (unchanged)
-- movies latest hindi: 112 items → **~130 items, 0.002s warm**
+- trending (all): 324 items → **379 items, 0.002–0.02s warm**
+- latest hindi: 184 items → **249 items, 0.002s warm**
+- movies latest hindi: 112 items → **132 items, 0.005s warm**
   (moviebox now included)
 - latest kdrama: 39 items → **69 items, 0.002s warm** (ckdub 39 + dramacool 30)
 - latest cdrama (new): **30 items, 0.002s warm** (dramacool)
 - latest pakistani (new): **20 items, 0.002s warm** (pkdramas)
 - latest hollywood (new): **18 items, 0.002s warm** (moviebox)
-- search "avengers" type=movie: 26 items → **~37 items, 0.54s cold**
-  (moviebox adds 11 Hindi-dub titles)
+- search "avengers" type=movie: 26 items → **44 items, 0.86s cold**
+  (moviebox adds Hindi-dub titles)
 - live suite: **81/90** (was 66/72) — only RareAnimes drops + the
   pkdramas "naruto" query artifact.
 
