@@ -31,10 +31,35 @@ Full per-endpoint results: `TEST-REPORT.md` (36/48 endpoints passed).
 | Re:ANIME (`reanime`) | English | ✅ Working — search, home, details, streams (flixcloud file, `proxy=true`) |
 | 9anime (`nineanime`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p) |
 | AniKoto (`anikoto`) | English | ✅ Working — search, home, details, streams (MegaPlay 800p) |
-| AniSuge (`anisuge`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p) |
+| AniSuge (`anisuge`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p, `proxy=true`) |
 | AnimeDekho (`animedekho`) | Hindi | ✅ Working — search, home, details, streams (`embed` iframes) |
 | Anime World India (`animeworld`) | Hindi | ⚠️ **Degraded** — see below |
 | Rare Toons India (`rareanimes`) | Hindi | ⚠️ **Degraded** — see below |
+
+### v1.1.1 changes (2026-11-18) — playback fix, found by live testing
+
+Direct browser playback of MegaPlay/anisuge m3u8 streams 403'd: the video
+CDNs sit behind Cloudflare and reject requests without the site Referer,
+which a browser never sends for a cross-origin `<video>` fetch. Fixes:
+
+- **MegaPlay extractor + anisuge now mark direct streams `proxy: true`**
+  (reanime.py precedent) with the right `Referer`/`User-Agent` headers, so
+  the website plays them via `/api/proxy` instead of directly.
+- **`/api/proxy` rewrites HLS playlists**: variant/segment/key URLs inside
+  an m3u8 are rewritten to absolute `/api/proxy` URLs (same origin, headers
+  preserved), because the browser fetches them straight from the playlist —
+  proxying only the master link was not enough. Playlists are fetched whole
+  even when Chromium sends `Range` (a partial playlist cannot be rewritten).
+- **Subtitles are rewritten to absolute `/api/proxy` URLs** in
+  `/api/streams` (the subtitle CDN 403s without the MegaPlay host Referer
+  too); the base URL is scheme-aware via `X-Forwarded-Proto` so https pages
+  don't get http:// links (mixed content).
+- Tests: `tests/test_proxy_rewrite.py` — 15 passed, 0 failed (rewrite,
+  Range-on-playlist, proxy flags, scheme handling). Full unit suite:
+  34/34 animedekho + 44/44 hindi, no regressions.
+- Live-verified on the deployed server (Oracle Mumbai): Playwright against
+  the public link — 12/12 checks (home/browse/detail/watch, real playback
+  with metadata loading, zero console errors, zero failed requests).
 
 ### v1.1 changes (2026-11-18)
 

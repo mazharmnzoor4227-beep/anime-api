@@ -668,7 +668,11 @@ class AniSugeSource(_SourceBase):
         return {"streams": streams, "subtitles": self._subtitles}
 
     def _add_stream(self, name, url, quality=None, stream_type="m3u8",
-                    headers=None, proxy=False):
+                    headers=None, proxy=True):
+        # proxy=True by default: these CDNs (MegaPlay/crystaldrift, kwik,
+        # gogoanime) 403 direct browser fetches (Cloudflare hotlink check
+        # needs the site Referer); the website must play them via
+        # /api/proxy, which forwards the headers (reanime.py precedent).
         if not url or not url.startswith("http"):
             return
         self._streams.append(

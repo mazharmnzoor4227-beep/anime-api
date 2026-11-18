@@ -3,6 +3,22 @@
 Date: 2026-11-18 (PKT). Run: `tests/test_live.py` (all sources, real sites).
 Result: **36/48 endpoints passed** — 6 of 8 sources fully working, 2 dropped.
 
+## v1.1.1 — playback fix, verified live on the deployed server
+
+Direct browser playback of anisuge/MegaPlay m3u8 streams 403'd (Cloudflare
+hotlink check needs the site Referer). After the fix (streams `proxy: true`,
+`/api/proxy` m3u8 rewrite, subtitles via `/api/proxy`): Playwright against
+the public tunnel link — **12/12 checks passed** (home: real posters, 48/241
+loaded in-browser; Latest Hindi Dub 52 items; browse naruto; detail 5 eps;
+watch: real stream URL via proxy, metadata loads, no "didn't load", zero
+console errors, zero failed requests). Unit: 15/15 proxy-rewrite tests.
+
+Mumbai server IP results (the sandbox-blocked Hindi sources re-tested):
+animeworld search "naruto" → 2 results (WORKS from the server IP);
+rareanimes → 0 results on search + latest with no error (site responds,
+returns nothing — likely markup/domain drift, needs a look);
+`/api/latest?lang=hindi` → 52 items (animedekho 32 + animeworld 20).
+
 ## Per-source results (query: "naruto" unless noted)
 
 | Source | search | home trending | home popular | home latest | details | streams | Verdict |

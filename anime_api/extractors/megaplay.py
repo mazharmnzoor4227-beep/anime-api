@@ -145,15 +145,15 @@ def _parse_master(master_text, master_url, audio_type, host):
         sep = "&" if "?" in url else "?"
         url = "%s%st=%s" % (url, sep, audio_type)
         return [{"name": "MegaPlay", "url": url, "quality": quality,
-                 "type": "m3u8", "headers": headers, "proxy": False}]
+                 "type": "m3u8", "headers": headers, "proxy": True}]
     if not variants:
         return [{"name": "MegaPlay", "url": signed_master, "quality": None,
-                 "type": "m3u8", "headers": headers, "proxy": False}]
+                 "type": "m3u8", "headers": headers, "proxy": True}]
     streams = []
     for quality, uri in variants:
         name = "MegaPlay %dp" % quality if quality else "MegaPlay"
         streams.append({"name": name, "url": sign_url(uri), "quality": quality,
-                        "type": "m3u8", "headers": headers, "proxy": False})
+                        "type": "m3u8", "headers": headers, "proxy": True})
     streams.sort(key=lambda s: -(s["quality"] or 0))
     return streams
 
@@ -231,8 +231,13 @@ def resolve_megaplay(embed_url, referer):
             for track in data.get("tracks") or []:
                 if isinstance(track, dict) and track.get("kind") in ("captions", "subtitles"):
                     if track.get("file"):
+                        # Subtitle CDNs 403 without the MegaPlay host as
+                        # Referer too; the API rewrites these to /api/proxy
+                        # (see app.py /api/streams) using this referer+ua.
                         subtitles.append({"label": track.get("label") or "English",
-                                          "url": track["file"]})
+                                          "url": track["file"],
+                                          "referer": "https://%s/" % try_host,
+                                          "ua": UA})
             headers = {"User-Agent": UA, "Referer": "https://%s/" % try_host}
             signed = sign_url(file_url)
             try:
@@ -247,6 +252,6 @@ def resolve_megaplay(embed_url, referer):
                 pass
             return [{"name": "MegaPlay", "url": signed, "quality": None,
                      "type": "m3u8" if ".m3u8" in file_url else "video",
-                     "headers": headers, "proxy": False}], subtitles
+                     "headers": headers, "proxy": True}], subtitles
     raise ValueError("MegaPlay: all getSources attempts failed for %s (%s)"
                      % (embed_url, last_error))

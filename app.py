@@ -12,6 +12,7 @@ Routes (all JSON, CORS enabled) — see INTERFACE.md and README.md:
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlencode, urljoin
 
 import requests
 from flask import Flask, Response, jsonify, request, stream_with_context
@@ -224,7 +225,68 @@ def api_streams():
         return _error(str(exc), 502, source=source_param)
     if isinstance(result, dict) and result.get("error"):
         return _error(result["error"], 502, source=source_param)
+    if isinstance(result, dict):
+        # Subtitles carry a "referer" (+ "ua") hint when their CDN 403s
+        # direct browser fetches: rewrite them to absolute /api/proxy
+        # URLs (same origin as this API) so the <track> element loads.
+        for sub in result.get("subtitles") or []:
+            if isinstance(sub, dict) and sub.get("referer"):
+                params = {"url": sub["url"], "referer": sub["referer"]}
+                if sub.get("ua"):
+                    params["ua"] = sub["ua"]
+                sub["url"] = _public_base() + "/api/proxy?" + urlencode(params)
+                sub.pop("referer", None)
+                sub.pop("ua", None)
     return jsonify(result)
+
+
+def _public_base():
+    """Public base URL of this API, scheme-aware behind the tunnel proxy.
+
+    The reverse proxy terminates the tunnel's HTTPS and forwards plain
+    HTTP locally, so request.scheme is http even though the browser sees
+    https — building proxy URLs from it would hand the browser http://
+    links that the https:// page blocks as mixed content. The proxy
+    sets X-Forwarded-Proto: https (this API is only ever reached through
+    it), so prefer that header.
+    """
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    return "%s://%s" % (proto, request.host)
+
+
+def _proxy_url_for(media_url, referer=None, ua=None):
+    """Absolute /api/proxy URL for a media URL (same origin as this API)."""
+    params = {"url": media_url}
+    if referer:
+        params["referer"] = referer
+    if ua:
+        params["ua"] = ua
+    return _public_base() + "/api/proxy?" + urlencode(params)
+
+
+def _rewrite_m3u8(text, upstream_url, referer=None, ua=None):
+    """Rewrite an HLS playlist so every media URL flows through /api/proxy.
+
+    Browsers fetch variant/segment URLs straight from the playlist, so
+    without this the playlist's absolute URLs hit the CDN without the
+    hotlink Referer and Cloudflare 403s them. Relative URLs are resolved
+    against the playlist URL first; #EXT-X-KEY / #EXT-X-MAP URI="..."
+    attributes are rewritten too.
+    """
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            def _uri_repl(m):
+                abs_url = urljoin(upstream_url, m.group(1))
+                return 'URI="%s"' % _proxy_url_for(abs_url, referer, ua)
+            out.append(re.sub(r'URI="([^"]+)"', _uri_repl, line))
+        elif stripped:
+            out.append(_proxy_url_for(urljoin(upstream_url, stripped),
+                                      referer, ua))
+        else:
+            out.append(line)
+    return "\n".join(out) + "\n"
 
 
 @app.route("/api/proxy")
@@ -239,14 +301,34 @@ def api_proxy():
     referer = request.args.get("referer")
     if referer:
         headers["Referer"] = referer
-    if request.headers.get("Range"):
-        headers["Range"] = request.headers["Range"]
+    range_hdr = request.headers.get("Range")
+    url_is_playlist = url.lower().split("?", 1)[0].endswith(".m3u8")
+    # Chromium's media stack sends Range even for playlists. A partial
+    # playlist cannot be rewritten, so for playlist URLs fetch the whole
+    # file upstream and answer 200 with the rewritten body (legal: a
+    # server MAY ignore Range). For anything else, forward Range as-is.
+    if range_hdr and not url_is_playlist:
+        headers["Range"] = range_hdr
     try:
         upstream = requests.get(url, headers=headers, stream=True, timeout=30)
     except Exception as exc:  # noqa: BLE001
         return _error(str(exc), 502)
     if upstream.status_code >= 400:
         return _error("upstream HTTP %s" % upstream.status_code, 502)
+    content_type = upstream.headers.get("content-type", "")
+    is_playlist = url_is_playlist or "mpegurl" in content_type
+    have_full_body = (not range_hdr) or url_is_playlist
+    if is_playlist and have_full_body:
+        # Buffer + rewrite so variant/segment URLs keep flowing through
+        # this proxy with the hotlink headers (see _rewrite_m3u8).
+        rewritten = _rewrite_m3u8(upstream.text, url, referer, ua)
+        resp_headers = {
+            k: v for k, v in upstream.headers.items()
+            if k.lower() in _FORWARD_HEADERS and k.lower() != "content-length"
+        }
+        resp_headers["content-type"] = "application/vnd.apple.mpegurl"
+        return Response(rewritten, status=upstream.status_code,
+                        headers=resp_headers)
     resp_headers = {
         k: v for k, v in upstream.headers.items()
         if k.lower() in _FORWARD_HEADERS
