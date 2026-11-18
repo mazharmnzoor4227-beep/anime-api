@@ -24,7 +24,7 @@ FANOUT_TIMEOUT_SECONDS = 12
 CACHE_TTL_LIST_SECONDS = 600       # trending / popular / latest
 CACHE_TTL_SEARCH_SECONDS = 300     # search
 CACHE_TTL_DETAILS_SECONDS = 1800   # /api/anime
-CACHE_TTL_STREAMS_SECONDS = 120    # /api/streams (tokens can expire)
+CACHE_TTL_STREAMS_SECONDS = 600    # /api/streams (tokens live days; see megaplay signUrl)
 CACHE_TTL_WIDGETS_SECONDS = 1800   # /api/widgets (site sidebar)
 
 # Pre-warm: refresh the hot list keys this often (seconds).
