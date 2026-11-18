@@ -21,9 +21,9 @@ anime-api/
 The shared contract every source follows lives in
 `INTERFACE.md` (in this repo).
 
-## Source status — live-tested 2026-11-18
+## Source status — live-tested 2026-11-18 (v1.1)
 
-Full per-endpoint results: `TEST-REPORT.md` (30/42 endpoints passed).
+Full per-endpoint results: `TEST-REPORT.md` (36/48 endpoints passed).
 
 | Source | Language | Status |
 |---|---|---|
@@ -32,8 +32,25 @@ Full per-endpoint results: `TEST-REPORT.md` (30/42 endpoints passed).
 | 9anime (`nineanime`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p) |
 | AniKoto (`anikoto`) | English | ✅ Working — search, home, details, streams (MegaPlay 800p) |
 | AniSuge (`anisuge`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p) |
+| AnimeDekho (`animedekho`) | Hindi | ✅ Working — search, home, details, streams (`embed` iframes) |
 | Anime World India (`animeworld`) | Hindi | ⚠️ **Degraded** — see below |
 | Rare Toons India (`rareanimes`) | Hindi | ⚠️ **Degraded** — see below |
+
+### v1.1 changes (2026-11-18)
+
+- **New source: AnimeDekho** (`animedekho`, Hindi dub) — live site
+  https://animedekho.tv (WordPress + `dgt` theme). Search/latest/details/streams
+  via its public `wp-json/dgt/v1/*` endpoints; a nonce (scraped from any site
+  page's inline `DGT={...}` config) is required for the watch call, cached and
+  refreshed once on a gated response. Streams are `type: "embed"` iframe pages
+  (`player.php?url=…`, `/embed/<post>/<season>-<ep>`) — the video host behind
+  them (AbyssPlayer/Ravok) assembles its file URL in JS, so there is no direct
+  file URL server-side; the website plays them in an `<iframe>`.
+  Live-tested 6/6 from this sandbox; 31 fixture unit tests pass.
+- **Details now include `type` + `audio`** in every source (the website needs
+  them for Continue/Library snapshots). `streams` gains the `"embed"` type.
+- **Fan-out dedupes `(source, id)`** — sites repeat cards in one list, which
+  used to render the same title twice.
 
 ### Why the two Hindi sources are degraded
 
@@ -156,6 +173,7 @@ curl "http://localhost:8000/api/anime?source=xanime&id=naruto"
   "id": "naruto", "title": "Naruto", "poster": "...", "banner": "...",
   "plot": "...", "genres": ["Action"], "year": 2002,
   "status": "completed", "score": 8.1,
+  "type": "anime", "audio": ["sub", "dub"],
   "seasons": [
     {"number": 1, "name": "Season 1", "episodes": [
       {"number": 1, "title": "Episode 1", "data": "<opaque episode data>"}
@@ -191,7 +209,9 @@ curl "http://localhost:8000/api/streams?source=xanime&data=<epId>%7Csub"
 }
 ```
 
-`type` is `"m3u8"` or `"video"` (direct file). Streams are sorted best
+`type` is `"m3u8"`, `"video"` (direct file), or `"embed"` (the source site's
+own iframe player page — play it in an `<iframe>`, exactly like the source
+site does; no direct file URL exists for it). Streams are sorted best
 quality first when quality is known. `headers` are the Referer/User-Agent
 to play the URL with. If `proxy` is `true`, the URL will not play directly
 from the visitor's browser (hotlink protection / IP-bound token) — play it

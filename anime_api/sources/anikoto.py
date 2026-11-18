@@ -211,7 +211,8 @@ class AniKoto(Source):
         except Exception:
             return {"id": item_id, "title": "Unknown", "poster": None,
                     "banner": None, "plot": None, "genres": [], "year": None,
-                    "status": None, "score": None,
+                    "status": None, "score": None, "type": "anime",
+                    "audio": ["sub"],
                     "seasons": [{"number": 1, "name": "Season 1", "episodes": []}]}
         title_el = (soup.select_one("#w-info h1.title")
                     or soup.select_one("h1[itemprop=name]")
@@ -270,9 +271,18 @@ class AniKoto(Source):
                             "episodes": dub_eps})
         if not seasons:
             seasons = [{"number": 1, "name": "Season 1", "episodes": []}]
+        # Type: same "movie" heuristic the list parser uses on the card
+        # meta text (".meta/.info/.type/.right").
+        meta_text = " ".join(
+            e.get_text(" ", strip=True)
+            for e in soup.select("#w-info .meta, #w-info .info, #w-info .type, #w-info .right")
+        )
+        mtype = "movie" if re.search(r"movie", meta_text, re.I) else "anime"
+        audio = (["sub"] if sub_eps else []) + (["dub"] if dub_eps else [])
         return {"id": url, "title": title, "poster": poster, "banner": None,
                 "plot": plot, "genres": genres, "year": None, "status": None,
-                "score": None, "seasons": seasons}
+                "score": None, "type": mtype, "audio": audio or ["sub"],
+                "seasons": seasons}
 
     # -- streams -------------------------------------------------------
     def streams(self, episode_data):

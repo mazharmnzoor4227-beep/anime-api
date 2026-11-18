@@ -216,6 +216,8 @@ class AnimeWorld(Source):
                 "year": None,
                 "status": None,
                 "score": None,
+                "type": "movie",
+                "audio": ["dub"],
                 "seasons": [{
                     "number": 1,
                     "name": "Season 1",
@@ -297,6 +299,8 @@ class AnimeWorld(Source):
             "year": None,
             "status": None,
             "score": None,
+            "type": "anime",
+            "audio": ["dub"],
             "seasons": out_seasons,
         }
 

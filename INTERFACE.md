@@ -56,7 +56,9 @@ class Source:
 - `details(item_id)` -> dict:
   `{ "id": str, "title": str, "poster": str|None, "banner": str|None,
      "plot": str|None, "genres": [str], "year": int|None, "status": "ongoing"|"completed"|None,
-     "score": float|None (0-10), "seasons": [ {"number": int, "name": str,
+     "score": float|None (0-10), "type": "anime"|"movie"|"ova",
+     "audio": ["sub","dub"] (subset, may be empty),
+     "seasons": [ {"number": int, "name": str,
          "episodes": [ {"number": int, "title": str, "data": str} ]} ] }`
   `episode.data` = OPAQUE string the website passes back to /streams (URL, pipe-string,
   or JSON — the source module's choice; document it in the module docstring).
@@ -65,10 +67,14 @@ class Source:
   episodes in season 2 named "Dubbed" (or mirror the provider's own split).
 - `streams(episode_data)` -> dict:
   `{ "streams": [ {"name": str, "url": str, "quality": int|None (e.g. 1080),
-                  "type": "m3u8"|"video", "headers": {str:str} (referer/UA to play with),
+                  "type": "m3u8"|"video"|"embed", "headers": {str:str} (referer/UA to play with),
                   "proxy": bool (True if the URL likely needs the /proxy endpoint) } ],
      "subtitles": [ {"label": str, "url": str} ] }`
-  Sort streams best quality first when known. Never raise on a single bad server —
+  `"embed"` means the URL is the source site's own iframe embed page
+  (e.g. AnimeDekho's `player.php?url=...`): the video host behind it is a
+  JS player shell with no direct file URL, so the website plays it in an
+  `<iframe>`, exactly like the source site does. Sort streams best quality
+  first when known. Never raise on a single bad server —
   collect what works, skip what fails.
 
 ### Rules

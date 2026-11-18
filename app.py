@@ -95,6 +95,18 @@ def _fan_out(sources, lang, fn):
     # Do not block the response on still-running source threads; pending
     # (not yet started) futures are cancelled, running ones finish alone.
     pool.shutdown(wait=False, cancel_futures=True)
+    # Sites repeat cards (same title twice in one row); dedupe by
+    # (source, id) keeping first occurrence so clients never see the
+    # same item twice in one list.
+    seen = set()
+    unique = []
+    for it in items:
+        key = (it.get("source"), it.get("id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(it)
+    items = unique
     if (lang or "all").lower() == "japanese":
         items = [it for it in items if "sub" in (it.get("audio") or [])]
     return items, errors

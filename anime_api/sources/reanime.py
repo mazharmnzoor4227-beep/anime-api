@@ -318,6 +318,8 @@ class ReanimeSource(Source):
             "year": _to_int(detail.get("season_year")),
             "status": status,
             "score": score,
+            "type": _item_type(detail.get("format")),
+            "audio": (["sub"] if sub_eps else []) + (["dub"] if dub_eps else []),
             "seasons": seasons,
         }
 

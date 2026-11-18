@@ -344,10 +344,17 @@ class RareAnimes(Source):
             "year": year,
             "status": None,
             "score": None,
+            # Hindi source: everything is dubbed. Type is "movie" when the
+            # hub links contain a movie entry, else "anime".
+            "audio": ["dub"],
         }
 
         hub_links = self._parse_hub_headings(soup)
         is_hub = len(hub_links) >= 2
+        base_result["type"] = (
+            "movie" if any(k == "movie" for k, _, _, _ in hub_links)
+            else "anime"
+        )
         if not is_hub:
             # Paragraph-hub fallback: only when no direct content exists.
             direct = self._parse_page_content(soup, default_season, depth=0)

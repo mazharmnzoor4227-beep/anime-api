@@ -265,6 +265,8 @@ class XanimeSource(Source):
             "year": _to_int(data.get("info_meta_year")),
             "status": status,
             "score": score,
+            "type": _item_type(data.get("info_meta_type") or []),
+            "audio": _audio_from_types(data.get("info_sou_types") or []),
             "seasons": seasons,
         }
 

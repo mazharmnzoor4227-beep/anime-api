@@ -1,7 +1,7 @@
 # anime-api — live test report
 
 Date: 2026-11-18 (PKT). Run: `tests/test_live.py` (all sources, real sites).
-Result: **30/42 endpoints passed** — 5 of 7 sources fully working, 2 dropped.
+Result: **36/48 endpoints passed** — 6 of 8 sources fully working, 2 dropped.
 
 ## Per-source results (query: "naruto" unless noted)
 
@@ -12,13 +12,24 @@ Result: **30/42 endpoints passed** — 5 of 7 sources fully working, 2 dropped.
 | nineanime | 10 items, first "Naruto Spin-Off: Rock Lee" | 34 | 34 | 34 | 1 season, 51 eps | 1 stream, MegaPlay 1080p, 1 subtitle | ✅ 6/6 |
 | anikoto | 26 items, first "Naruto" | 30 | 30 | 30 | 2 seasons, 440 eps | 5 streams, MegaPlay 800p, 4 subtitles | ✅ 6/6 |
 | anisuge | 26 items, first "Road of Naruto" | 21 | 24 | 12 | 1 season, 1 ep | 2 streams, MegaPlay 1080p | ✅ 6/6 |
+| animedekho | 3 items, first "Naruto Shippūden" | 20 | 16 | 32 | 18 seasons, 390 eps, score 9.7 | 8 streams, embed iframes | ✅ 6/6 |
 | animeworld | 0 items | 0 | 0 | 0 | skipped | skipped | ❌ 0/6 DROPPED |
 | rareanimes | 0 items | 0 | 0 | 0 | skipped | skipped | ❌ 0/6 DROPPED |
 
 Extra live checks (not in the table):
 - AniSuge "one piece": 28 results; 1,180 sub + 1,160 dub episodes; ep 1 → 5 streams (1080p/720p/480p) + 3 subtitles.
-- Flask app verified live: `/health` lists 7 sources; `/api/search?q=naruto&lang=all` → 200, 124 results in ~5s; `/api/proxy` Range test against a real flixcloud file → HTTP 206, `Content-Range: bytes 0-99/189492877`.
+- Flask app verified live: `/health` lists 8 sources; `/api/trending` → 166 items, 0 duplicates, 0 poster nulls; `/api/latest?lang=hindi` → 32 items, all AnimeDekho; `/api/search?q=naruto&lang=all` → 119 results (website browse); `/api/proxy` Range test against a real flixcloud file → HTTP 206, `Content-Range: bytes 0-99/189492877`.
 - Fan-out fix verified: `/api/search?q=naruto&lang=hindi` → HTTP 200 with `errors: [{timeout after 45s, animeworld}, {timeout after 45s, rareanimes}]` instead of a 500 (a slow/blocked source never fails the whole request).
+- AnimeDekho streams verified twice via real episode data from `/api/anime`
+  (Naruto Shippūden E01, `{"post_id": 4959, "episode_id": 35182, ...}`) → 8
+  embed streams, first `https://animedekho.tv/embed/31910/1-1`; the website's
+  watch page renders the embed in an `<iframe>` with a server picker
+  (HydraX/OPlayer/NeoCDN/SRuby, 1080p).
+- Poster CDNs spot-checked from this sandbox: TMDB `image.tmdb.org` → 200
+  image/jpeg; anipixcdn → 200 image/jpeg; AniList `s4.anilist.co` → 403 on
+  every sampled URL (the CDN blocks this sandbox's egress IP, not a deleted
+  file — reanime posters are AniList-hosted, so they show blank here but load
+  on a normal network).
 
 ## Fixture/unit tests (no network)
 
@@ -27,6 +38,17 @@ Extra live checks (not in the table):
   (mocked), PixelDrain direct emit, Mega→empty, GoFile `wt` format, dub keys,
   `variantsJson` round-trip, AnimeWorld + RareAnimes parsing against fixture
   HTML, registry pickup (7 sources).
+- AnimeDekho (`tests/test_animedekho_unit.py`): **34 passed, 0 failed** —
+  quality parsing, card parsing (dedupe), row selection, search/details/streams
+  against fixtures (nonce header, gated retry, rank order), details
+  `type`/`audio` fields, **nonce scraped from the episode page** (the
+  homepage carries no `dgt-store` script — found 2026-11-18 when live streams
+  calls started returning 0; fixed by trying the episode/referer page first,
+  homepage only as fallback), registry pickup (8 sources).
+- **Nonce fix verified live** (2026-11-18, after the fix): fresh Flask server,
+  real episode data from `/api/anime` → `/api/streams` returns **8 embed
+  streams**; the website watch page renders the embed in an `<iframe>` with a
+  4+ server picker and zero ≥400 responses (Playwright, `verify/watch2.png`).
 
 ## Why the Hindi sources are dropped (verified, not guessed)
 

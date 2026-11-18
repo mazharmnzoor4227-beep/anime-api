@@ -617,6 +617,10 @@ class AniSugeSource(_SourceBase):
             "year": year,
             "status": None,
             "score": None,
+            # This module does not distinguish movies (list items also
+            # hardcode "anime"); audio follows the sub/dub episode split.
+            "type": "anime",
+            "audio": (["sub"] if sub_eps else []) + (["dub"] if dub_eps else []),
             "seasons": seasons,
         }
 

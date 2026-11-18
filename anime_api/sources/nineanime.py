@@ -153,7 +153,8 @@ class NineAnime(Source):
         except Exception:
             return {"id": item_id, "title": "Unknown", "poster": None,
                     "banner": None, "plot": None, "genres": [], "year": None,
-                    "status": None, "score": None,
+                    "status": None, "score": None, "type": "anime",
+                    "audio": ["sub"],
                     "seasons": [{"number": 1, "name": "Season 1", "episodes": []}]}
         title_el = soup.select_one("h1.entry-title") or soup.select_one("h1")
         title = title_el.get_text(strip=True) if title_el else "Unknown"
@@ -204,6 +205,7 @@ class NineAnime(Source):
                 "plot": plot_el.get_text(" ", strip=True) if plot_el else None,
                 "genres": [a.get_text(strip=True) for a in soup.select(".genxed a")],
                 "year": None, "status": status, "score": None,
+                "type": mtype, "audio": ["dub"] if is_dub else ["sub"],
                 "seasons": [{"number": 1, "name": season_name,
                              "episodes": episodes}]}
 
