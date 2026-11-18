@@ -21,9 +21,9 @@ anime-api/
 The shared contract every source follows lives in
 `INTERFACE.md` (in this repo).
 
-## Source status — live-tested 2026-11-18 (v1.2)
+## Source status — live-tested 2026-11-18 (v1.3)
 
-Full per-endpoint results: `TEST-REPORT.md` (42/48 endpoints passed).
+Full per-endpoint results: `TEST-REPORT.md` (66/72 endpoints passed).
 
 | Source | Language | Status |
 |---|---|---|
@@ -35,6 +35,58 @@ Full per-endpoint results: `TEST-REPORT.md` (42/48 endpoints passed).
 | AnimeDekho (`animedekho`) | Hindi | ✅ Working — search, home, details, streams (direct `embed` URL, no watch call) |
 | Anime World India (`animeworld`) | Hindi | ✅ Working from the Mumbai server IP (was degraded from the sandbox IP) |
 | Rare Toons India (`rareanimes`) | Hindi | ⚠️ **Degraded** — see below |
+| Vegamovies (`vegamovies`) | Hindi | ✅ Working — search, home, details, streams (direct G-Drive file + V-Cloud R2) |
+| Multimovies (`multimovies`) | Hindi | ✅ Working — search, home, details, streams (Cineverse m3u8 1080p, Hindi audio default) |
+| IndStream (`indstream`) | Hindi | ✅ Working — search, home, details, streams (Vidly m3u8 1080p, Hindi audio track) |
+| CKDub (`ckdub`) | Hindi | ✅ Working — K-drama Hindi dub; search, home, details, streams (`embed` player) |
+
+### v1.3 changes (2026-11-18) — Hindi-dub MOVIES + K-drama
+
+New sources (all verified live from the Mumbai server before wiring;
+see `TEST-REPORT.md` for the per-source verification):
+
+- **Vegamovies** (`vegamovies`, Hindi, movie) — `ts-search.php` Typesense
+  JSON search, `div.poster-card` home rows, detail pages carry nexdrive
+  gateways that expand to fastdl direct Google Drive files and V-Cloud
+  R2 files. Details emit one episode per download-quality group.
+- **Multimovies** (`multimovies`, Hindi, movie) — `/api/search` JSON,
+  `article.poster-card` rows, `watchConfig.initialServers` + server-chip
+  buttons. The Cineverse server resolves to a direct m3u8 master whose
+  Hindi audio rendition is the default; other servers fall back to
+  `embed` player URLs.
+- **IndStream** (`indstream`, Hindi, movie) — keyless public APIs only:
+  IMDb suggestion search, Cinemeta catalogs/meta, Vidly embed → m3u8
+  master (1080p) with a Hindi audio track. Vidrift has no m3u8 and is
+  skipped; VidLink (libsodium token) is not ported.
+- **CKDub** (`ckdub`, Hindi, series, category `kdrama`) — Hindi-dubbed
+  Korean dramas; `/category/korean`, `/drama/<slug>/`,
+  `/drama/<slug>/watch/<n>` → playmogo `embed` player. No server-side
+  search endpoint exists, so search filters the small browse/category
+  catalogues client-side.
+
+New/changed endpoints (existing ones unchanged):
+
+- `GET /api/movies?lang=&source=&page=&section=latest` — fan-out over
+  movie sources only (112 items for `lang=hindi`).
+- `GET /api/title?source=&id=` — generic details for ANY source
+  (same handler as `/api/anime`, which keeps working as-is).
+- `/api/search` and `/api/trending|popular|latest` gain `&type=movie|series|all`
+  (filters by `Source.media_type`, default `"series"`).
+- `?category=` is generalized: any source declaring the category in
+  `Source.categories` serves it (AnimeDekho declares `tamil`/`telugu`,
+  CKDub declares `kdrama`). A category no source supports — or a
+  `source` the lang/type/category filters exclude — returns empty
+  results **with an `errors` entry**, never other sources' items.
+- Pre-warm also refreshes movies latest (hindi + all) and latest kdrama;
+  list/search cache keys now include `type`.
+- **`/api/proxy` defaults the upstream User-Agent to the browser UA**
+  when no `?ua=` is given: the Cineverse stream proxy 403s the
+  python-requests default (live 502 before the fix; master + variant
+  200 after, 1087 segment URLs rewritten). The Cineverse/IndStream
+  streams also carry the browser UA in their `headers`.
+- Tests: **156/156 unit** (13 cache + 34 animedekho + 46 hindi + 16
+  proxy-rewrite + 47 movies, new). Live suite: **66/72** (was 42/48) —
+  the 4 new sources are 6/6 each; only RareAnimes still drops.
 
 ### v1.2 changes (2026-11-18) — speed + AnimeDekho watch gate
 
@@ -283,18 +335,34 @@ curl "http://localhost:8000/api/search?q=naruto&lang=english"
 
 ### `GET /api/trending|popular|latest?lang=&source=&page=1`
 
-Same fan-out shape as search, one section at a time.
+Same fan-out shape as search, one section at a time. `&type=movie|series|all`
+(v1.3) filters by source media type; `&category=tamil|telugu|kdrama` restricts
+the fan-out to sources declaring that category.
 
 ```sh
 curl "http://localhost:8000/api/trending?lang=english&source=xanime"
 curl "http://localhost:8000/api/popular?lang=all&page=2"
+curl "http://localhost:8000/api/latest?lang=hindi&category=kdrama"
+```
+
+### `GET /api/movies?lang=&source=&page=1&section=latest` (v1.3)
+
+Movie lists — the same fan-out, but only over movie sources
+(`vegamovies`, `multimovies`, `indstream`). `section` picks the row
+(`latest` default, `trending`, `popular`).
+
+```sh
+curl "http://localhost:8000/api/movies?lang=hindi"
+curl "http://localhost:8000/api/movies?section=trending&lang=all"
 ```
 
 ### `GET /api/anime?source=<id>&id=<item_id>`
 
 Details for one title. `id` is the source's own identifier from a
 search/home result (a slug for JSON sources, a full detail URL for HTML
-sources).
+sources). `GET /api/title?source=<id>&id=<item_id>` (v1.3) is the same
+endpoint under a generic name — use it for movies and K-drama; `/api/anime`
+keeps working as-is.
 
 ```sh
 curl "http://localhost:8000/api/anime?source=xanime&id=naruto"

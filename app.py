@@ -3,15 +3,21 @@
 Routes (all JSON, CORS enabled) — see INTERFACE.md and README.md:
   GET /health
   GET /api/sources
-  GET /api/search?q=&lang=&source=&page=1
-  GET /api/trending|popular|latest?lang=&source=&page=1&category=
+  GET /api/search?q=&lang=&source=&page=1&type=
+  GET /api/trending|popular|latest?lang=&source=&page=1&category=&type=
+  GET /api/movies?lang=&source=&page=1&section=latest
   GET /api/anime?source=&id=
+  GET /api/title?source=&id=   (generic details for ANY source)
   GET /api/streams?source=&data=
   GET /api/widgets
   GET /api/proxy?url=&ua=&referer=   (Range-capable passthrough)
 
 v1.2 speed work: response cache (X-Cache: HIT/MISS), pre-warm thread,
 fast-fail fan-out (a slow source is listed in ``errors``, never gates).
+v1.3: movie sources (media_type="movie") + kdrama category; /api/movies
+fans out over movie sources only; ?type=movie|series|all filters the
+fan-out by Source.media_type; ?category= fans out to any source that
+declares the category in Source.categories (was animedekho-only).
 """
 
 import re
@@ -31,6 +37,7 @@ from anime_api.config import (CACHE_TTL_DETAILS_SECONDS,
                               CACHE_TTL_WIDGETS_SECONDS,
                               FANOUT_TIMEOUT_SECONDS, HOST, PORT,
                               PREWARM_INTERVAL_SECONDS)
+from anime_api.http import BROWSER_UA
 from anime_api.sources import get_source, list_sources
 
 app = Flask(__name__)
@@ -146,30 +153,54 @@ def _respond(payload, hit):
 
 
 def _call_home(source, section, page, category):
-    """home() with optional category; falls back if the source lacks it."""
+    """home() with optional category; falls back if the source lacks it.
+
+    A source that does not accept ``category`` returns [] here — the
+    fan-out already restricts category requests to sources that
+    declare it, so a normal home row would be the wrong answer.
+    """
     if category:
         try:
             return source.home(section, page=page, category=category)
         except TypeError:
-            pass
+            return []
     return source.home(section, page=page)
 
 
-def _compute_list(section, lang, source_param, page, category):
+def _compute_list(section, lang, source_param, page, category,
+                  media_type="all"):
     """The list fan-out, shared by the routes and the pre-warm thread."""
     sources = _lang_sources(lang)
+    media_type = (media_type or "all").lower()
+    if media_type != "all":
+        sources = [s for s in sources
+                   if getattr(s, "media_type", "series") == media_type]
     if category:
-        # Only AnimeDekho has category pages (tamil/telugu); other
-        # sources would return their normal home rows, which is wrong.
-        sources = [s for s in sources if s.id == "animedekho"]
+        # v1.3: any source declaring the category in Source.categories
+        # serves it (was animedekho-only for tamil/telugu).
+        sources = [s for s in sources
+                   if category in getattr(s, "categories", ())]
+        if not sources:
+            return [], [{"source": "category:" + category,
+                         "error": "no source supports category: %s"
+                         % category}]
     if source_param != "all":
         src = get_source(source_param)
         if src is None:
             return None, [{"source": source_param,
                            "error": "unknown source: %s" % source_param}]
         sources = [s for s in sources if s.id == src.id]
-        if lang == "all" and not category:
+        if lang == "all" and not category and media_type == "all":
             sources = [src]
+        if not sources:
+            # The named source exists but the lang/type/category
+            # filters excluded it — empty results WITH an error, never
+            # another source's items.
+            return [], [{"source": source_param,
+                         "error": "source %s does not match lang=%s "
+                         "type=%s category=%s"
+                         % (source_param, lang, media_type,
+                            category or "")}]
     items, errors = _fan_out(
         sources, lang,
         lambda s: _call_home(s, section, page, category))
@@ -179,20 +210,23 @@ def _compute_list(section, lang, source_param, page, category):
 def _prewarm_once():
     """Refresh the hot list keys so the first real user never waits."""
     jobs = [
-        ("trending", "all", "all", 1, None),
-        ("popular", "all", "all", 1, None),
-        ("latest", "all", "all", 1, None),
-        ("latest", "hindi", "all", 1, None),
-        ("latest", "english", "all", 1, None),
-        ("latest", "all", "all", 1, "tamil"),
-        ("latest", "all", "all", 1, "telugu"),
+        ("trending", "all", "all", 1, None, "all"),
+        ("popular", "all", "all", 1, None, "all"),
+        ("latest", "all", "all", 1, None, "all"),
+        ("latest", "hindi", "all", 1, None, "all"),
+        ("latest", "english", "all", 1, None, "all"),
+        ("latest", "all", "all", 1, "tamil", "all"),
+        ("latest", "all", "all", 1, "telugu", "all"),
+        ("latest", "hindi", "all", 1, None, "movie"),
+        ("latest", "all", "all", 1, None, "movie"),
+        ("latest", "all", "all", 1, "kdrama", "all"),
     ]
-    for section, lang, source_param, page, category in jobs:
+    for section, lang, source_param, page, category, media_type in jobs:
         key = _cache_key("list", section, lang, source_param, page,
-                         category or "")
+                         category or "", media_type)
         try:
             items, errors = _compute_list(
-                section, lang, source_param, page, category)
+                section, lang, source_param, page, category, media_type)
             if items is not None:
                 CACHE.set(key, {"results": items, "errors": errors},
                           CACHE_TTL_LIST_SECONDS)
@@ -235,20 +269,33 @@ def api_search():
         return _error("missing ?q=", 400)
     lang = request.args.get("lang", "all")
     source_param = request.args.get("source", "all")
+    media_type = (request.args.get("type") or "all").lower()
     page = _page_param()
-    key = _cache_key("search", query.lower(), lang, source_param, page)
+    key = _cache_key("search", query.lower(), lang, source_param, page,
+                     media_type)
     cached, hit = CACHE.get(key)
     if hit:
         return _respond(cached, True)
     sources = _lang_sources(lang)
+    if media_type != "all":
+        sources = [s for s in sources
+                   if getattr(s, "media_type", "series") == media_type]
     if source_param != "all":
         src = get_source(source_param)
         if src is None:
             return _error("unknown source: %s" % source_param, 404,
                           source=source_param)
         sources = [s for s in sources if s.id == src.id]
-        if lang == "all":
+        if lang == "all" and media_type == "all":
             sources = [src]
+        if not sources:
+            # Named source exists but lang/type filters excluded it.
+            payload = {"results": [], "errors": [{
+                "source": source_param,
+                "error": "source %s does not match lang=%s type=%s"
+                % (source_param, lang, media_type)}]}
+            CACHE.set(key, payload, CACHE_TTL_SEARCH_SECONDS)
+            return _respond(payload, False)
     items, errors = _fan_out(
         sources, lang, lambda s: s.search(query, page=page)
     )
@@ -257,18 +304,21 @@ def api_search():
     return _respond(payload, False)
 
 
-def _home_route(section):
+def _home_route(section, media_type="all"):
     lang = request.args.get("lang", "all")
     source_param = request.args.get("source", "all")
     page = _page_param()
     category = (request.args.get("category") or "").strip().lower() or None
+    if not media_type or media_type == "all":
+        # ?type= on the list routes overrides the default (all).
+        media_type = (request.args.get("type") or "all").lower()
     key = _cache_key("list", section, lang, source_param, page,
-                     category or "")
+                     category or "", media_type)
     cached, hit = CACHE.get(key)
     if hit:
         return _respond(cached, True)
     items, errors = _compute_list(section, lang, source_param, page,
-                                  category)
+                                  category, media_type)
     if items is None:
         return _error("unknown source: %s" % source_param, 404,
                       source=source_param)
@@ -292,8 +342,35 @@ def api_latest():
     return _home_route("latest")
 
 
+@app.route("/api/movies")
+def api_movies():
+    """Movie lists: fan-out over movie sources only.
+
+    ``section`` (default ``latest``) picks the row; ``lang`` /
+    ``source`` / ``page`` behave like the other list routes.
+    """
+    section = (request.args.get("section") or "latest").strip().lower()
+    if section not in ("trending", "popular", "latest"):
+        section = "latest"
+    return _home_route(section, media_type="movie")
+
+
 @app.route("/api/anime")
 def api_anime():
+    return _details_route()
+
+
+@app.route("/api/title")
+def api_title():
+    """Generic details for ANY source (movies, K-drama, anime).
+
+    Same handler as /api/anime — kept as a separate route so movie /
+    drama clients don't call an "anime" endpoint.
+    """
+    return _details_route()
+
+
+def _details_route():
     source_param = request.args.get("source") or ""
     item_id = request.args.get("id") or ""
     if not source_param or not item_id:
@@ -436,7 +513,7 @@ def api_proxy():
     url = request.args.get("url") or ""
     if not url.startswith(("http://", "https://")):
         return _error("url must start with http(s)", 400)
-    headers = {}
+    headers = {"User-Agent": BROWSER_UA}
     ua = request.args.get("ua")
     if ua:
         headers["User-Agent"] = ua

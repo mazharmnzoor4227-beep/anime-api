@@ -4,7 +4,7 @@ Usage:
     ~/workspace/anime-api-work/venv/bin/python tests/test_live.py [--source <id>]
 
 For each source it runs, in order:
-  search("naruto") -> details(first search hit) -> streams(first episode)
+  search(<query>) -> details(first search hit) -> streams(first episode)
   home(trending) / home(popular) / home(latest)
 and prints PASS/FAIL per endpoint with a one-line real-data summary.
 A source that fails EVERY endpoint is reported as DROPPED with the reason.
@@ -18,6 +18,18 @@ import traceback
 sys.path.insert(0, __file__.rsplit("/tests/", 1)[0])
 
 from anime_api.sources import get_source, list_sources  # noqa: E402
+
+# v1.3: movie sources have no "naruto" catalogue (their search is for
+# movies) and CKDub is K-drama only — give each source a query its own
+# catalogue actually answers.
+QUERIES = {
+    "vegamovies": "avengers",
+    "multimovies": "avengers",
+    # "avengers" first hit is the unreleased Doomsday (no Vidly file
+    # yet); "avengers endgame" hits the released film instead.
+    "indstream": "avengers endgame",
+    "ckdub": "boys over flowers",
+}
 
 
 def _summarise_items(items):
@@ -39,10 +51,11 @@ def _first_episode(details):
 def test_source(src, verbose=True):
     """Return dict endpoint -> (passed, summary)."""
     results = {}
+    query = QUERIES.get(src.id, "naruto")
 
     # search
     try:
-        items = src.search("naruto", page=1) or []
+        items = src.search(query, page=1) or []
         ok = len(items) > 0
         results["search"] = (ok, _summarise_items(items))
     except Exception as exc:

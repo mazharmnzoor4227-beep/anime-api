@@ -110,6 +110,7 @@ class AnimeDekho(Source):
     language = "hindi"
     domain_key = ""  # not a CloudStream extension; no Firebase key
     default_url = "https://animedekho.tv"
+    categories = ("tamil", "telugu")
 
     # -- fetching ----------------------------------------------------------
 

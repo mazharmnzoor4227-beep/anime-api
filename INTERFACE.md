@@ -33,6 +33,11 @@ class Source:
     language = ""    # "hindi" | "english"
     domain_key = ""  # Firebase key, e.g. "animeworldindia" ("" if none)
     default_url = "" # static fallback host, e.g. "https://watchanimeworld.one"
+    media_type = "series"  # v1.3: "series" (default) | "movie" —
+                           # /api/search & ?type= and /api/movies filter on this
+    categories = ()  # v1.3: category names this source serves, e.g.
+                     # ("kdrama",) / ("tamil", "telugu") — /api/latest
+                     # ?category= fans out to these sources only
 
     @property
     def base_url(self):  # resolved via resolve_domain(domain_key, default_url)
@@ -110,20 +115,35 @@ Other agents: `from anime_api.extractors.megaplay import resolve_megaplay` — d
 Routes (all JSON, CORS enabled):
 - `GET /health` -> {"ok": true, "sources": [...ids...]}
 - `GET /api/sources` -> [{id, name, language}]
-- `GET /api/search?q=<query>&lang=<hindi|english|japanese|all>&source=<id|all>&page=1`
+- `GET /api/search?q=<query>&lang=<hindi|english|japanese|all>&source=<id|all>&page=1&type=<movie|series|all>`
   (unified: fan out to matching sources in parallel threads, merge; lang filter:
    hindi -> only hindi sources; english -> only english sources; japanese -> english
    sources with audio containing "sub" (Japanese audio + subtitles); all -> all sources.
+   `type` (v1.3) filters the fan-out by `Source.media_type`.
    On a source error, include it in "errors": [{source, error}] and keep the rest.)
-- `GET /api/trending|popular|latest?lang=&source=&page=1&category=<tamil|telugu>`
-  (same fan-out; `category` restricts the fan-out to AnimeDekho)
+- `GET /api/trending|popular|latest?lang=&source=&page=1&category=<tamil|telugu|kdrama>&type=<movie|series|all>`
+  (same fan-out; `category` restricts the fan-out to sources that declare
+  it in `Source.categories` — v1.3 generalized, was animedekho-only.
+  A category no source supports returns empty `results` with an `errors`
+  entry (`"no source supports category: <name>"`) — never other
+  categories' items. A `source` that the lang/type/category filters
+  exclude likewise returns empty results with an `errors` entry, never
+  another source's items.)
+- `GET /api/movies?lang=&source=&page=1&section=<latest|trending|popular>`
+  (v1.3: list fan-out over movie sources only; default section `latest`.)
 - `GET /api/anime?source=<id>&id=<item_id>` -> details()
+- `GET /api/title?source=<id>&id=<item_id>` -> details() (v1.3: generic
+  details for ANY source — movies, K-drama, anime; same handler as
+  /api/anime, which keeps working as-is.)
 - `GET /api/streams?source=<id>&data=<episode_data>` -> streams()
 - `GET /api/widgets` -> AnimeDekho sidebar: {"updates": [str],
   "schedule": [{"day", "count"}], "upcoming": [{"title", "note"}]}
 - `GET /api/proxy?url=<url-encoded>` -> Range-capable passthrough (streaming response,
   forwards Range + User-Agent + Referer headers from query params `ua`/`referer`,
   for hotlink-protected / IP-bound links). Must validate url starts with http(s).
+  v1.3: when no `ua` param is given the proxy sends the browser UA
+  (`BROWSER_UA`) upstream, not the python-requests default — some hosts
+  (e.g. the Multimovies Cineverse stream proxy) 403 the requests UA.
 - Errors: {"error": "<message>", "source": "<id>"} with HTTP 502 on upstream failure,
   400 on bad params, 404 on unknown source. A source whose details()/streams()
   returns None is also a 502 (was JSON `null` with 200 before v1.2).
@@ -134,11 +154,17 @@ Routes (all JSON, CORS enabled):
   list keys (trending/popular/latest all + latest hindi + tamil/telugu) every
   5 min so the first user never pays a cold scrape. Fan-out timeout is 12s
   (was 45s); a source still running at the deadline is listed in `errors`
-  and never gates the response.
+  and never gates the response. v1.3: cache keys also include `type`
+  (`movie|series|all`); pre-warm also refreshes movies latest (hindi + all)
+  and latest kdrama.
 
 ## Live testing (every agent tests its own modules before finishing)
 `tests/test_live.py` (scaffold agent creates it; each agent adds tests for its sources):
 runs each source's search/home/details/streams against the REAL sites and prints
 PASS/FAIL per endpoint with a one-line real-data summary (e.g. "search naruto: 10 items,
 first='Naruto'"). A source that fails EVERY endpoint is reported as DROPPED with the reason.
+Per-source search queries live in `QUERIES` (movie sources search "avengers",
+CKDub "boys over flowers" — "naruto" has no catalogue for them).
+`tests/test_movies_live.py` is the same flow for the v1.3 movie/K-drama
+sources plus the kdrama category check.
 Run with: `~/workspace/anime-api-work/venv/bin/python tests/test_live.py`

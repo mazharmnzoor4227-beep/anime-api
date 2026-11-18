@@ -1,7 +1,81 @@
 # anime-api — live test report
 
 Date: 2026-11-18 (PKT). Run: `tests/test_live.py` (all sources, real sites).
-Result: **42/48 endpoints passed** — 7 of 8 sources fully working, 1 dropped.
+Result: **66/72 endpoints passed** — 11 of 12 sources fully working, 1 dropped.
+
+## v1.3 — Hindi-dub movies + K-drama, verified live on the deployed server (Oracle Mumbai)
+
+Unit suites: cache 13/13, animedekho 34/34, hindi 46/46,
+proxy-rewrite 16/16, movies 47/47 (new) — **156/156, no regressions**.
+
+Live suites: full `tests/test_live.py` **66/72** (was 42/48); movies
+`tests/test_movies_live.py` **25/25**. The 4 new sources are 6/6 each;
+only RareAnimes still drops (markup drift, 0 items — unchanged).
+
+### Per-source verification (live, from the server IP, before wiring)
+
+| Source | search | home | details | streams | Verdict |
+|---|---|---|---|---|---|
+| vegamovies | 11 items, first "Avengers Endgame : Encore (2026)" | 18–19/section | 1 season, 8 eps (quality groups) | 2 streams, direct G-Drive file (HEAD 200, 940 MB) + V-Cloud R2 | ✅ 6/6 |
+| multimovies | 9 items, first "Avengers: Endgame" | 30–43/section | 1 season, 1 ep, score 8.2 | 6 streams, Cineverse m3u8 1080p (Hindi audio default) + embed fallbacks | ✅ 6/6 |
+| indstream | 2 items, first "Avengers: Endgame" | 50–100/section | 1 season, 1 ep, score 8.4 | 1 stream, Vidly m3u8 1080p + English subtitle | ✅ 6/6 |
+| ckdub | 1 item, "Boys Over Flowers" | 18–39/section | 1 season, 25 eps | 1 stream, playmogo `embed` | ✅ 6/6 |
+| kdrama category | — | 39 items, all `ckdub` | — | — | ✅ |
+
+Verification notes:
+- Vegamovies: search index → detail (8 nexdrive gateways) → gateway
+  expands to fastdl + vcloud → fastdl resolves to a direct
+  `video-downloads.googleusercontent.com` file (HEAD 200, 940,129,536
+  bytes); vcloud double-atob token page yields R2 file links.
+- Multimovies: detail carries 6 server chips; Cineverse embed →
+  proxy.php player → `stream_proxy.php` master playlist (`#EXTM3U`,
+  Hindi audio `NAME="हिन्दी", LANGUAGE="hi", DEFAULT=YES`). The master
+  **502'd through `/api/proxy` until the proxy defaulted to a browser
+  UA** (the host 403s python-requests UA) — fixed in v1.3; after the
+  fix master 200 + variant 200 with 1,087 segment URLs rewritten.
+  Other servers (GD mirror, Nexus 429, Vidrift, VIDOUT, Vidbolt) are JS
+  player shells — returned as `embed` fallbacks.
+- IndStream: IMDb suggest → Cinemeta meta (moviedb_id 299534) → Vidly
+  embed → m3u8 master with a Hindi audio rendition (`LANGUAGE="hin"`).
+  Vidrift's embed page carries no m3u8 (skipped); VidLink needs a
+  libsodium token (not ported). The first "avengers" search hit is the
+  unreleased Avengers: Doomsday (tmdb 1003596) — Vidly has no file for
+  it yet, so the live query is "avengers endgame"; Doomsday failing
+  streams is a missing file, not a source bug.
+- CKDub: home/category/detail/watch all 200; the watch page's iframe is
+  a playmogo embed — returned as `embed` (same contract as AnimeDekho).
+  Playmogo itself 403s Cloudflare "Just a moment..." from the server IP,
+  so the embed could not be resolved further server-side; on a normal
+  (phone) network it loads like any video-host embed. The site has no
+  server-side search endpoint (`/search`, `/api/search` 404;
+  `/browse?q=` returns empty) — search filters the small browse/category
+  catalogues client-side.
+
+### Server timings (curl, direct to 127.0.0.1:8000), before → after
+
+v1.2.4 baseline → v1.3 (same server, same method):
+- trending (all): 1.9s → 3ms warm (186 items) → **324 items, 0.003s warm**
+- latest hindi: 0.68s → 2ms warm (52 items) → **184 items, 0.002s warm**
+  (movies + K-drama now included)
+- movies latest hindi (new): **112 items, 0.002s warm** (pre-warmed)
+- latest kdrama (new): **39 items, 0.49s cold / 0.002s warm**, all `ckdub`
+- search "avengers" type=movie (new): **26 items, 0.54s cold**, movie sources only
+- details vegamovies via /api/title (new): **0.11s cold / 0.002s warm**
+- search "naruto": 1.78s → 0.79s cold / 0.002s warm (unchanged)
+- details JoJo (5 seasons): 3.38s → 1.5s cold / 0.002s warm (unchanged)
+- live suite: **66/72** (was 42/48) — only RareAnimes drops.
+
+### Contract fixes (frontend report, verified live after deploy)
+
+- `GET /api/title?source=&id=` exists and returns the same shape as
+  `/api/anime` for ANY source (verified: multimovies Endgame 200,
+  animedekho Naruto Shippūden 200, vegamovies Encore 200).
+- `GET /api/latest?lang=hindi&category=kdrama` returns **only** CKDub
+  items (39, `sources: ["ckdub"]`). An unknown category returns empty
+  results with `errors: [{"source": "category:<name>", "error": "no
+  source supports category: <name>"}]`; a `source` the lang/type/category
+  filters exclude returns empty results with an `errors` entry naming
+  the source — never another source's items.
 
 ## v1.2 — speed, verified live on the deployed server (Oracle Mumbai)
 

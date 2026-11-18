@@ -14,6 +14,9 @@ class Source:
     language = ""     # "hindi" | "english"
     domain_key = ""   # Firebase key, e.g. "animeworldindia" ("" if none)
     default_url = ""  # static fallback host
+    media_type = "series"  # "series" (default) | "movie" — /api/search &type= filters on this
+    categories = ()   # category names this source serves, e.g. ("kdrama",)
+                      # — /api/latest?category=<name> fans out to these sources only
 
     @property
     def base_url(self):
