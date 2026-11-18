@@ -79,7 +79,13 @@ def resolve_zephyrix(iframe_url, main_url):
         "url": source,
         "quality": None,
         "type": "m3u8",
-        "headers": {"Accept": "*/*", "User-Agent": _PLAYER_UA},
+        # Referer {playerBase}/ is REQUIRED by the segment CDN
+        # (s11.zn-grid01.top 403s without it; the proxy turns that into
+        # a 502, and hls.js fails fatally — verified 2026-11-18, run 10).
+        # The proxy carries it into every rewritten playlist/segment URL,
+        # so one header here covers the whole chain.
+        "headers": {"Accept": "*/*", "User-Agent": _PLAYER_UA,
+                    "Referer": player_base + "/"},
         # proxy=True (was False): the zephyrix CDN sends no
         # Access-Control-Allow-Origin, so a browser hls.js XHR to the
         # direct URL is CORS-blocked and the Hindi-dub stream never plays

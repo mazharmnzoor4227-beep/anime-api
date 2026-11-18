@@ -110,6 +110,12 @@ with mock.patch("anime_api.extractors.zephyrix.requests.post",
     # proxy=True: the CDN sends no CORS headers, so a browser hls.js XHR
     # to the direct URL is blocked — the website must play via /api/proxy.
     check("zephyrix stream is proxied (CORS)", streams[0].get("proxy") is True, repr(streams))
+    # Referer {playerBase}/: the segment CDN (zn-grid01.top) 403s without
+    # it, which the proxy turns into a 502 and hls.js fails fatally
+    # (verified 2026-11-18, run 10).
+    check("zephyrix stream carries playerBase Referer",
+          streams[0].get("headers", {}).get("Referer") == "https://zephyrix.example/",
+          repr(streams[0].get("headers")))
     args, kwargs = post.call_args
     check("zephyrix POST shape",
           args[0] == "https://zephyrix.example/player/index.php?data=abcdef01&do=getVideo"

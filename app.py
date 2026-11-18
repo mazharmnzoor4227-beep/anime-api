@@ -398,6 +398,14 @@ def _proxy_url_for(media_url, referer=None, ua=None):
     return _public_base() + "/api/proxy?" + urlencode(params)
 
 
+def _chain_first(first, chunks):
+    """Yield ``first`` then the rest of ``chunks`` (used for the
+    non-playlist passthrough after peeking at the first chunk)."""
+    if first:
+        yield first
+    yield from chunks
+
+
 def _rewrite_m3u8(text, upstream_url, referer=None, ua=None):
     """Rewrite an HLS playlist so every media URL flows through /api/proxy.
 
@@ -450,12 +458,24 @@ def api_proxy():
     if upstream.status_code >= 400:
         return _error("upstream HTTP %s" % upstream.status_code, 502)
     content_type = upstream.headers.get("content-type", "")
-    is_playlist = url_is_playlist or "mpegurl" in content_type
-    have_full_body = (not range_hdr) or url_is_playlist
+    # Playlist detection must NOT rely on the extension or content-type:
+    # some CDNs serve HLS manifests as extensionless / .txt URLs with a
+    # plain text content-type (zephyrix master.txt, its /m3/<token>
+    # variants and audio playlists). A playlist always starts with
+    # #EXTM3U, so peek at the first chunk — without this the manifest
+    # passes through raw and its relative /m3/... URIs resolve against
+    # the website's own origin (404), which kills playback with an hls.js
+    # fatal error even though the master itself loaded fine.
+    chunks = upstream.iter_content(chunk_size=64 * 1024)
+    first = next(chunks, b"")
+    is_playlist = (url_is_playlist or "mpegurl" in content_type
+                   or first.lstrip().startswith(b"#EXTM3U"))
+    have_full_body = (not range_hdr) or is_playlist
     if is_playlist and have_full_body:
         # Buffer + rewrite so variant/segment URLs keep flowing through
         # this proxy with the hotlink headers (see _rewrite_m3u8).
-        rewritten = _rewrite_m3u8(upstream.text, url, referer, ua)
+        body = (first + b"".join(chunks)).decode("utf-8", "replace")
+        rewritten = _rewrite_m3u8(body, url, referer, ua)
         resp_headers = {
             k: v for k, v in upstream.headers.items()
             if k.lower() in _FORWARD_HEADERS and k.lower() != "content-length"
@@ -468,7 +488,7 @@ def api_proxy():
         if k.lower() in _FORWARD_HEADERS
     }
     return Response(
-        stream_with_context(upstream.iter_content(chunk_size=64 * 1024)),
+        stream_with_context(_chain_first(first, chunks)),
         status=upstream.status_code,
         headers=resp_headers,
         direct_passthrough=True,

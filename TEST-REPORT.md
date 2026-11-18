@@ -21,6 +21,46 @@ Server timings (curl, direct to 127.0.0.1:8000), before → after:
 - live suite: **42/48** (was 36/48) — only RareAnimes drops (markup drift,
   0 items on every endpoint; same as v1.1, needs a look later).
 
+## v1.2.2 — AnimeWorld CORS + detail fields, verified live on the server
+
+Unit suites: cache 13/13, animedekho 34/34, hindi 45/45, proxy-rewrite 15/15
+— **107/107, no regressions**.
+
+- Zephyrix `proxy: True` (was False): browser hls.js was CORS-blocked on
+  `play.zephyrix.org` master playlists (no Access-Control-Allow-Origin from
+  the CDN); `/api/proxy` serves them same-origin, 200 in ~0.3s. This was
+  the reason Hindi-dub AnimeWorld never played in the clone.
+- AnimeDekho details: JoJo → runtime 24, age "R", studio "David
+  Production", links TMDB/MAL/AniList all present; Naruto Shippuden →
+  18 seasons, 390 episodes, 146 fillers, 390 stills (per-episode
+  `filler`/`still`/`air_date` verified live).
+- Live suite unchanged: **42/48** — only RareAnimes drops.
+
+## v1.2.4 — zephyrix segment Referer
+
+Unit suites: cache 13/13, animedekho 34/34, hindi 46/46, proxy-rewrite
+16/16 — **109/109, no regressions**.
+
+- Zephyrix streams carry `Referer: {playerBase}/`: the segment CDN
+  403s without it (proxy → 502 → hls.js fatal). Verified live through
+  the clone proxy: master 200, variant 200 (697 proxy links), segments
+  HTTP 200 — AnimeWorld Hindi-dub playback now works end to end.
+- Live suite unchanged: **42/48** — only RareAnimes drops.
+
+## v1.2.3 — proxy playlist detection + cold stream resolve
+
+Unit suites: cache 13/13, animedekho 34/34, hindi 45/45, proxy-rewrite
+16/16 — **108/108, no regressions**.
+
+- `/api/proxy` content-detects playlists (`#EXTM3U` first bytes): zephyrix
+  `master.txt` + `/m3/<token>` variants/audio now rewrite fully (master
+  9/9, variant 140/140 URLs through the proxy, 0 bare `/m3/` left).
+  Before the fix, AnimeWorld Hindi playback failed in the browser with
+  an hls.js fatal error even though the master loaded (run 9 diagnosis).
+- AniSuge `streams()` parallel legacy+mapper: cold **4.36s → 2.12s**,
+  same 3 streams ([800, 800, 480]).
+- Live suite unchanged: **42/48** — only RareAnimes drops.
+
 ## v1.1.1 — playback fix, verified live on the deployed server
 
 Direct browser playback of anisuge/MegaPlay m3u8 streams 403'd (Cloudflare

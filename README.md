@@ -77,6 +77,65 @@ going ad-gated for datacenter IPs (`{"gated": true}` — the site's own
   **104/104 unit, no regressions**. Live suite on the server: **42/48**
   (was 36/48; only RareAnimes still drops — markup drift, 0 items).
 
+### v1.2.2 changes (2026-11-18) — AnimeWorld CORS + detail fields
+
+- **Zephyrix extractor now proxies** (`"proxy": False` → `True`): the
+  `play.zephyrix.org` CDN sends no CORS headers, so the browser's hls.js
+  was blocked fetching the AnimeWorld Hindi master playlist — Hindi-dub
+  playback never started in the clone. `/api/proxy` serves it same-origin
+  (200, ~0.3s). Unit test asserts `proxy` is True.
+- **AnimeDekho `details()` now returns `runtime` (minutes), `age_rating`
+  and `studio`** (from the data-snapshot / `.dgt-fact` blocks) **and
+  `links`** `{tmdb, mal, anilist}` — the fields the real site's detail
+  page shows. Verified live: JoJo → runtime 24, age "R", studio
+  "David Production", all three links.
+- **Episodes now carry `filler` (bool), `still` (TMDB w300 URL) and
+  `air_date`** from the dgt episodes endpoint — the clone's 5-column
+  episode grid highlights filler episodes with an orange border. Verified
+  live: Naruto Shippuden → 18 seasons, 390 episodes, 146 fillers, 390 stills.
+- **Pre-warm also refreshes `("latest", "english", ...)`** for the
+  English Sub rail.
+- Tests: **107/107 unit** (13 cache + 34 animedekho + 45 hindi + 15
+  proxy-rewrite), no regressions. Live suite unchanged: 42/48.
+
+### v1.2.3 changes (2026-11-18) — proxy playlist detection + cold stream resolve
+
+- **`/api/proxy` now detects playlists by content, not extension**: some
+  CDNs serve HLS manifests as extensionless / `.txt` URLs with a plain
+  `text/plain` content-type (zephyrix `master.txt`, its `/m3/<token>`
+  variants and audio playlists). The old check (`.m3u8` extension or
+  `mpegurl` content-type) let those manifests pass through raw, so their
+  relative `/m3/...` URIs resolved against the website's own origin
+  (404) — hls.js raised a fatal error and AnimeWorld Hindi-dub playback
+  never started, even though the master itself loaded fine (found by
+  Playwright, run 9). The proxy now peeks at the first chunk: a body
+  starting with `#EXTM3U` is buffered and rewritten. Verified live:
+  proxied master 9/9 URIs rewritten (0 bare `/m3/` left), variant
+  playlist 140/140 segment URLs rewritten. New unit test
+  (`test_proxy_rewrite.py`, now 16 tests).
+- **AniSuge `streams()` resolves its two paths in parallel**
+  (`ThreadPoolExecutor`, legacy + mapper are independent — both parse
+  only from `episode_data`). Measured cold on the server: **4.36s →
+  2.12s**, same 3 streams returned. This is what puts a cold first
+  frame under the 5s target (was 5.74s in run 9).
+- Tests: **108/108 unit** (13 cache + 34 animedekho + 45 hindi + 16
+  proxy-rewrite), no regressions. Live suite unchanged: 42/48.
+
+### v1.2.4 changes (2026-11-18) — zephyrix segment Referer
+
+- **Zephyrix streams now carry `Referer: {playerBase}/`** (the
+  extractor's docstring already claimed this, the code didn't set it):
+  the segment CDN (`s11.zn-grid01.top`) 403s without that Referer,
+  which the proxy turned into a 502 and hls.js failed fatally — so
+  AnimeWorld Hindi-dub playback still never started even after the
+  v1.2.3 playlist fix (found by Playwright, run 10: two proxy 502s).
+  The proxy carries the Referer into every rewritten playlist/segment
+  URL, so one header covers the whole chain. Verified live through
+  the clone proxy: master 200 → variant 200 (697 proxy links) →
+  **segments HTTP 200**.
+- Tests: **109/109 unit** (13 cache + 34 animedekho + 46 hindi + 16
+  proxy-rewrite), no regressions. Live suite unchanged: 42/48.
+
 ### v1.1.1 changes (2026-11-18) — playback fix, found by live testing
 
 Direct browser playback of MegaPlay/anisuge m3u8 streams 403'd: the video

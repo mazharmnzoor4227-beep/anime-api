@@ -139,6 +139,31 @@ with mock.patch.object(__import__("app").requests, "get", _fake_get):
     check("non-playlist + Range forwards Range upstream",
           calls["headers"].get("Range") == "bytes=0-99", str(calls["headers"]))
 
+# --- /api/proxy: playlist detection by content, not extension ---
+# zephyrix serves its master as master.txt with a text/plain
+# content-type and relative /m3/... URIs. Before the fix the manifest
+# passed through raw and hls.js resolved /m3/... against the website
+# origin (404) — a fatal error even though the master itself loaded.
+ZEPHYRIX_MASTER = (b"#EXTM3U\n#EXT-X-VERSION:3\n"
+                   b"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"hin\",NAME=\"Hindi\",URI=\"/m3/abc123\"\n"
+                   b"#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\n"
+                   b"/m3/def456\n")
+
+
+def _fake_get_txt(url, headers=None, stream=True, timeout=30):
+    return _FakeResp(200, ZEPHYRIX_MASTER, content_type="text/plain")
+
+
+with mock.patch.object(__import__("app").requests, "get", _fake_get_txt):
+    client = app.test_client()
+    r = client.get("/api/proxy?url=https%3A%2F%2Fplay.zephyrix.org%2Fcdn%2Fhls%2Fxyz%2Fmaster.txt")
+    check("txt master detected as playlist by content (#EXTM3U)",
+          r.status_code == 200
+          and b"/api/proxy?url=https%3A%2F%2Fplay.zephyrix.org%2Fm3%2Fabc123" in r.data
+          and b'URI="/m3/abc123"' not in r.data
+          and b"/api/proxy?url=https%3A%2F%2Fplay.zephyrix.org%2Fm3%2Fdef456" in r.data,
+          r.data[:300])
+
 with app.test_request_context("/", base_url="http://kaze.internal/",
                                headers={"X-Forwarded-Proto": "https"}):
     check("public base prefers X-Forwarded-Proto",
