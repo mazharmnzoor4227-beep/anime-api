@@ -175,37 +175,51 @@ def _call_home(source, section, page, category):
 def _compute_list(section, lang, source_param, page, category,
                   media_type="all"):
     """The list fan-out, shared by the routes and the pre-warm thread."""
-    sources = _lang_sources(lang)
+    sources = list_sources()
     media_type = (media_type or "all").lower()
-    if media_type != "all":
-        sources = [s for s in sources
-                   if getattr(s, "media_type", "series") == media_type]
     if category:
-        # v1.3: any source declaring the category in Source.categories
-        # serves it (was animedekho-only for tamil/telugu).
+        # v1.4.1: a category query returns that category's items
+        # regardless of the lang filter — the lang filter must not
+        # exclude a category's own sources. (v1.4 applied the lang
+        # filter first, so lang=hindi&category=cdrama returned 0:
+        # DramaCool is an English source and was dropped before the
+        # category filter ever ran.)
         sources = [s for s in sources
                    if category in getattr(s, "categories", ())]
         if not sources:
             return [], [{"source": "category:" + category,
                          "error": "no source supports category: %s"
                          % category}]
+    else:
+        sources = _lang_sources(lang)
+    if media_type != "all":
+        sources = [s for s in sources
+                   if getattr(s, "media_type", "series") == media_type]
     if source_param != "all":
         src = get_source(source_param)
         if src is None:
             return None, [{"source": source_param,
                            "error": "unknown source: %s" % source_param}]
-        sources = [s for s in sources if s.id == src.id]
-        if lang == "all" and not category and media_type == "all":
+        if (category
+                and category in getattr(src, "categories", ())
+                and (media_type == "all"
+                     or getattr(src, "media_type", "series") == media_type)):
+            # Named source serves this category: the lang filter
+            # does not apply to it either (see above).
             sources = [src]
-        if not sources:
-            # The named source exists but the lang/type/category
-            # filters excluded it — empty results WITH an error, never
-            # another source's items.
-            return [], [{"source": source_param,
-                         "error": "source %s does not match lang=%s "
-                         "type=%s category=%s"
-                         % (source_param, lang, media_type,
-                            category or "")}]
+        else:
+            sources = [s for s in sources if s.id == src.id]
+            if lang == "all" and not category and media_type == "all":
+                sources = [src]
+            if not sources:
+                # The named source exists but the lang/type/category
+                # filters excluded it — empty results WITH an error, never
+                # another source's items.
+                return [], [{"source": source_param,
+                             "error": "source %s does not match lang=%s "
+                             "type=%s category=%s"
+                             % (source_param, lang, media_type,
+                                category or "")}]
     items, errors = _fan_out(
         sources, lang,
         lambda s: _call_home(s, section, page, category))
@@ -554,7 +568,11 @@ def api_streams():
                 sub["url"] = _public_base() + "/api/proxy?" + urlencode(params)
                 sub.pop("referer", None)
                 sub.pop("ua", None)
-    CACHE.set(key, result, CACHE_TTL_STREAMS_SECONDS)
+    # v1.4.1: an EMPTY streams list is never cached — a transient
+    # upstream blip (bootstrap/H5 5xx) must not poison the key for
+    # 10 minutes; the next call re-resolves instead.
+    if isinstance(result, dict) and result.get("streams"):
+        CACHE.set(key, result, CACHE_TTL_STREAMS_SECONDS)
     return _respond(result, False)
 
 

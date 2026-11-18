@@ -173,10 +173,10 @@ def _dc_get(url, headers=None, timeout=30):
 
 with mock.patch("anime_api.sources.dramacool.get", side_effect=_dc_get):
     s = dc.streams("https://dramaacool.best/drama/blossom-in-darkness-2/episode-1")
-    check("dc streams embed iframe + server link",
-          len(s["streams"]) == 2
-          and s["streams"][0]["url"] == "https://vidmoly.org/embed-21w3v6zebhw9.html"
-          and all(st["type"] == "embed" for st in s["streams"]),
+    # v1.4.1: an embed-only page (vidmoly iframe, no direct file)
+    # yields NO streams — embeds are never returned any more.
+    check("dc streams embed-only page yields no streams",
+          s == {"streams": [], "subtitles": []},
           repr(s["streams"]))
 
 # ---------------------------------------------------------------- PKDramas
@@ -266,21 +266,17 @@ def _pk_get(url, headers=None, timeout=30):
 with mock.patch("anime_api.sources.pkdramas.get",
                 side_effect=_pk_get_esc):
     s = pk.streams("https://www.pkdramas.com/drama/323-tere-bin/episode/14857-x")
-    check("pk streams escaped RSC videoId",
-          len(s["streams"]) == 1
-          and s["streams"][0]["url"]
-          == "https://www.youtube.com/embed/FOayEzY3C3o",
+    # v1.4.1: YouTube uploads are geo-blocked from the server and
+    # embeds are never returned — streams are always empty.
+    check("pk streams returns empty (no embeds, youtube geo-blocked)",
+          s == {"streams": [], "subtitles": []},
           repr(s["streams"]))
 
 
 with mock.patch("anime_api.sources.pkdramas.get", side_effect=_pk_get):
     s = pk.streams("https://www.pkdramas.com/drama/3771-hurmat/episode/98539-x")
-    check("pk streams youtube embed",
-          len(s["streams"]) == 1
-          and s["streams"][0]["url"]
-          == "https://www.youtube.com/embed/GT35OUCEk4M"
-          and s["streams"][0]["type"] == "embed"
-          and s["streams"][0]["proxy"] is False,
+    check("pk streams returns empty (no embeds, youtube geo-blocked)",
+          s == {"streams": [], "subtitles": []},
           repr(s["streams"]))
 
 # ---------------------------------------------------------------- registry

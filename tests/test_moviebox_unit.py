@@ -50,6 +50,22 @@ check("mb subject to item (movie, hindi dub)",
 check("mb subject to item filters series",
       _subject_to_item({"subjectId": "999", "subjectType": 2,
                         "title": "Some Series"}) is None)
+check("mb subject to item filters hasResource false (v1.4.1)",
+      _subject_to_item({"subjectId": "6891610990048693368",
+                        "subjectType": 1, "title": "Avengers",
+                        "hasResource": False, "detailUrl": ""}) is None
+      and _subject_to_item({"subjectId": "4744425413315887552",
+                            "subjectType": 1,
+                            "title": "Captain America: The First "
+                            "Avenger - The Transformation",
+                            "hasResource": False}) is None)
+check("mb subject to item keeps hasResource true / missing key",
+      _subject_to_item({"subjectId": "7463045102144291536",
+                        "subjectType": 1, "title": "The Avengers [Hindi]",
+                        "hasResource": True}) is not None
+      and _subject_to_item({"subjectId": "5154075108704669480",
+                            "subjectType": 1,
+                            "title": "The Avengers"}) is not None)
 
 MB_SEARCH = {"code": 0, "data": {"items": [
     {"subject": {"subjectId": "5154075108704669480", "subjectType": 1,

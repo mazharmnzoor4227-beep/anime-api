@@ -31,16 +31,33 @@ Endpoints used (all public, no login):
   episode-page URL itself.
 * ``streams`` — ``GET`` the episode page and take its ``<iframe>``
   ``src`` (a video-host embed, e.g. vidmoly; the page also lists
-  streamtape servers) as ``embed`` streams — the site's own player
-  surface, played in an ``<iframe>`` exactly like the source site
-  does (same contract as AnimeDekho/CKDub embed streams). No direct
-  file URL is scraped from the host page.
+  streamtape servers) — then resolve it to a DIRECT HLS file (v1.4.1).
+  The embed host (hglink.to / hgcloud.to / dhcplay.com) is only a
+  JS redirector: its ``main.js`` sends the browser to a random
+  main domain (hanerix.com / audinifer.com / vibuxer.com), which
+  serves a JWPlayer page whose stream URL sits inside a Dean
+  Edwards ``eval(p,a,c,k,e,d)`` packed block. This module unpacks
+  that block server-side (no JS engine) and returns the direct
+  ``master.txt``/``.m3u8`` URL as ``type: "hls"`` with ``proxy:
+  true`` — the CDN 404s without the player-page ``Referer``, so the
+  stream carries it in ``headers`` and must be played through
+  ``/api/proxy``. If no direct file is found the episode returns
+  NO streams at all (never an ``embed`` — StreamHub plays nothing
+  through iframes).
 
-Verified live 2026-11-18 from the Mumbai server: home 200 with real
-drama cards; ``/search?q=boys`` 200 ("Showing search results for:
-boys", 30 cards); detail "Blossom in Darkness (2026)" 200 with
-episode-1..11 links; episode page 200 with a vidmoly iframe.
+Verified live 2026-11-18 from the Mumbai server: episode 1 of
+"The Confession Truth" (cdrama) -> hgcloud embed
+``https://hgcloud.to/e/exu5fvn2tqdg`` -> hanerix player ->
+direct HLS ``https://cwfuommwagyrfcg6.retailplatform.shop/
+dwjdqozeoybz/hls3/01/15268/2xxqmkpq929u_n/master.txt`` (720p,
+1080s); master playlist 200 + variant playlist 200 + first
+segment 200 (video/MP2T, 1,302,840 bytes) through ``/api/proxy``
+with the player Referer (direct fetch without it 404s).
 """
+
+import json
+import re
+from urllib.parse import quote_plus, urljoin, urlsplit
 
 import json
 import re
@@ -48,7 +65,7 @@ from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
 
-from anime_api.http import get
+from anime_api.http import BROWSER_UA, get
 from anime_api.sources.base import Source
 
 _SEARCH_API_MARKER = '"u":"https://api.dramacool.rest/v1/drama/search'
@@ -66,6 +83,18 @@ _COUNTRY_URLS = {
     "kdrama": "/explore?country=South%20Korea",
     "cdrama": "/explore?country=China",
 }
+
+# Embed-host redirect (deobfuscated from hgcloud.to/main.js, 2026-11-18):
+# hglink.to / hgcloud.to / dhcplay.com embed pages JS-redirect to a
+# random one of these main domains, which serve the real JWPlayer page.
+_REDIRECT_HOSTS = ("hglink.to", "hgcloud.to", "dhcplay.com")
+_MAIN_HOSTS = ("hanerix.com", "audinifer.com", "vibuxer.com")
+_PACKER_MARKER = "eval(function(p,a,c,k,e,d){"
+
+_FILE_RE = re.compile(r"""file\s*:\s*["'](https?://[^"']+)["']""")
+_MEDIA_RE = re.compile(
+    r"https?://[^\s\"'<>]+\.(?:m3u8|mp4|txt)\b[^\s\"'<>]*")
+_QUALITY_RE = re.compile(r"['\"](\d+)['\"]\s*:\s*['\"](\d+)p['\"]")
 
 
 def _abs_url(url, base):
@@ -119,6 +148,209 @@ def _clean_card_text(text):
     if clean.lower() in ("completed", "ongoing"):
         return ""
     return clean
+
+
+def _skip_js_string(s, i):
+    """Index just past a JS string literal starting at ``s[i]``."""
+    q = s[i]
+    i += 1
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == q:
+            return i + 1
+        i += 1
+    return i
+
+
+def _match_brace(s, i):
+    """``s[i] == '{'`` -> index just past the matching ``}``."""
+    depth = 0
+    while i < len(s):
+        ch = s[i]
+        if ch in ("'", '"', "`"):
+            i = _skip_js_string(s, i)
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _match_paren(s, i):
+    """``s[i] == '('`` -> index just past the matching ``)``."""
+    depth = 0
+    while i < len(s):
+        ch = s[i]
+        if ch in ("'", '"', "`"):
+            i = _skip_js_string(s, i)
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _parse_js_string(s, i):
+    """JS string literal at ``s[i]`` -> (value, index just past it)."""
+    q = s[i]
+    i += 1
+    out = []
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt == "n":
+                out.append("\n")
+            elif nxt == "r":
+                out.append("\r")
+            elif nxt == "t":
+                out.append("\t")
+            elif nxt == "u" and i + 5 < len(s):
+                try:
+                    out.append(chr(int(s[i + 2:i + 6], 16)))
+                except ValueError:
+                    out.append(nxt)
+                i += 4
+            else:
+                out.append(nxt)
+            i += 2
+            continue
+        if ch == q:
+            return "".join(out), i + 1
+        out.append(ch)
+        i += 1
+    raise ValueError("unterminated string")
+
+
+def _split_top_level(s):
+    """Split a JS call-argument list on top-level commas."""
+    parts, depth, i, cur = [], 0, 0, ""
+    in_str = None
+    while i < len(s):
+        ch = s[i]
+        if in_str:
+            cur += ch
+            if ch == "\\" and i + 1 < len(s):
+                cur += s[i + 1]
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_str = ch
+            cur += ch
+        elif ch in ("([{"):
+            depth += 1
+            cur += ch
+        elif ch in (")]}"):
+            depth -= 1
+            cur += ch
+        elif ch == "," and depth == 0:
+            parts.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+        i += 1
+    if cur.strip():
+        parts.append(cur.strip())
+    return parts
+
+
+def _encode_base(num, base):
+    """Packer token for ``num`` in base ``base`` (0-9a-zA-Z)."""
+    chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if num < base:
+        return chars[num]
+    out = ""
+    while num:
+        out = chars[num % base] + out
+        num //= base
+    return out or "0"
+
+
+def _unpack_packer(html):
+    """Unpack every Dean Edwards ``eval(p,a,c,k,e,d)`` block in ``html``.
+
+    The packed call is ``eval(function(p,a,c,k,e,d){...}('payload',
+    base, count, 'w1|w2|...'.split('|'), 0, {}))`` — a regex cannot
+    find the argument list (the payload itself contains ``))``), so
+    the function body and the argument list are matched with
+    string-aware brace/paren scanners. Returns the unpacked JS
+    strings (possibly empty).
+    """
+    unpacked = []
+    start = 0
+    while True:
+        at = html.find(_PACKER_MARKER, start)
+        if at < 0:
+            break
+        brace_open = at + len(_PACKER_MARKER) - 1
+        body_end = _match_brace(html, brace_open)
+        if body_end < 0:
+            break
+        j = body_end
+        while j < len(html) and html[j] in " \t\r\n":
+            j += 1
+        if j >= len(html) or html[j] != "(":
+            start = body_end
+            continue
+        args_end = _match_paren(html, j)
+        if args_end < 0:
+            break
+        try:
+            parts = _split_top_level(html[j + 1:args_end - 1])
+            if len(parts) >= 4:
+                payload, _ = _parse_js_string(parts[0].strip(), 0)
+                base = int(parts[1].strip())
+                count = int(parts[2].strip())
+                k_str, _ = _parse_js_string(parts[3].strip(), 0)
+                words = k_str.split("|")
+                result = payload
+                n = count
+                while n:
+                    n -= 1
+                    if n < len(words) and words[n]:
+                        result = re.sub(
+                            r"\b" + _encode_base(n, base) + r"\b",
+                            lambda m, w=words[n]: w, result)
+                unpacked.append(result)
+        except Exception:
+            pass
+        start = args_end
+    return unpacked
+
+
+def _extract_file_url(html):
+    """Direct media URL out of a player page -> (url, quality) or None.
+
+    Tries a plain ``file: "https://...m3u8"`` first, then the same
+    search inside every unpacked ``eval(p,a,c,k,e,d)`` block. The
+    quality comes from the JWPlayer ``qualityLabels`` map
+    (``{"815": "720p"}``) when present.
+    """
+    candidates = [html] + _unpack_packer(html)
+    for text in candidates:
+        quals = [int(q) for _, q in _QUALITY_RE.findall(text)]
+        quality = max(quals) if quals else None
+        for m in _FILE_RE.finditer(text):
+            if re.search(r"\.(m3u8|mp4|txt)\b", m.group(1)):
+                return m.group(1), quality
+        for m in _MEDIA_RE.finditer(text):
+            return m.group(0), quality
+    return None
 
 
 class DramaCool(Source):
@@ -385,8 +617,58 @@ class DramaCool(Source):
             }],
         }
 
+    def _direct_from_embed(self, embed_url, ep_url):
+        """One embed URL -> direct HLS stream dict, or None.
+
+        The embed host itself serves only a JS redirector / loader,
+        so the real player page is fetched — directly for hosts that
+        serve it, or via the redirector's main domains for the
+        hglink/hgcloud/dhcplay family — and its packed JWPlayer
+        block is unpacked for the direct file URL. The CDN 404s
+        without the player-page Referer, so the stream carries it.
+        """
+        candidates = [embed_url]
+        try:
+            parts = urlsplit(embed_url)
+            if parts.hostname in _REDIRECT_HOSTS:
+                for host in _MAIN_HOSTS:
+                    candidates.append("https://%s%s"
+                                      % (host, parts.path or "/"))
+        except Exception:
+            pass
+        for url in candidates:
+            try:
+                resp = get(url, headers={"Referer": ep_url}, timeout=15)
+                resp.raise_for_status()
+                found = _extract_file_url(resp.text)
+            except Exception:
+                continue
+            if not found:
+                continue
+            file_url, quality = found
+            is_hls = bool(re.search(r"\.(m3u8|txt)\b", file_url))
+            return {
+                "name": "DramaCool",
+                "url": file_url,
+                "quality": quality,
+                "type": "hls" if is_hls else "video",
+                # The CDN 404s without a Referer (verified live) —
+                # play through /api/proxy, which forwards Referer + UA.
+                "headers": {"Referer": url, "User-Agent": BROWSER_UA},
+                "proxy": True,
+                "label": "DramaCool %s" % (
+                    "%dp" % quality if quality else "Player"),
+            }
+        return None
+
     def streams(self, episode_data):
-        """Episode page -> its <iframe> src(s) as embed streams."""
+        """Episode page -> DIRECT HLS stream (never an embed).
+
+        Each iframe/server link on the episode page is resolved to
+        its direct file URL; the first that resolves wins. An
+        episode whose hosts yield no direct file returns no streams
+        — the app drops it instead of showing a dead Play button.
+        """
         ep_url = (episode_data or "").strip()
         if not ep_url.startswith("http"):
             return {"streams": [], "subtitles": []}
@@ -406,12 +688,10 @@ class DramaCool(Source):
             if href not in seen:
                 seen.add(href)
                 urls.append(href)
-        return {"streams": [{
-            "name": "DramaCool",
-            "url": url,
-            "quality": None,
-            "type": "embed",
-            "headers": {"Referer": ep_url},
-            "proxy": False,
-            "label": "DramaCool Player %d" % (i + 1),
-        } for i, url in enumerate(urls)], "subtitles": []}
+        streams = []
+        for url in urls[:3]:
+            direct = self._direct_from_embed(url, ep_url)
+            if direct:
+                streams.append(direct)
+                break
+        return {"streams": streams, "subtitles": []}

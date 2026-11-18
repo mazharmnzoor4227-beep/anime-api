@@ -23,14 +23,19 @@ Endpoints used (all public, no login):
   thumbnail); plot from the meta description; episodes from the
   ``/drama/<id>-<slug>/episode/<ep-id>-<slug>`` links. Episode
   ``data`` is the episode-page URL itself.
-* ``streams`` — ``GET`` the episode page and read the YouTube video
-  id from its embedded player payload. The id lives in the Next.js
-  RSC flight data with ESCAPED quotes
-  (``\\\"videoId\\\":\\\"<11 chars>\\\"``) and in the JSON-LD
-  ``embedUrl`` (``https://www.youtube.com/embed/<id>``) — both are
-  tried, in that order. Returned as one ``embed`` stream —
-  ``https://www.youtube.com/embed/<id>`` — played in an ``<iframe>``,
-  exactly the official upload the site itself plays.
+* ``streams`` — NO direct stream exists (v1.4.1). Episodes are the
+  broadcasters' official YouTube uploads, and this API's server
+  (Mumbai, India) cannot extract a direct stream for them: yt-dlp
+  2026.10.26 answers for every probed episode (Tere Bin ep 1/2/3/4)
+  ``Video unavailable. This content is currently unavailable in
+  this country because of an order from the government related to
+  national security or public order`` — the uploads are
+  geo-blocked in India. The old ``embed`` return (a YouTube iframe
+  URL) is therefore gone: StreamHub plays nothing through iframes,
+  so ``streams()`` returns empty and the app drops these items
+  instead of showing a dead Play button. If the API ever runs from
+  an IP where the uploads are available, a yt-dlp extraction can
+  be wired back in — it was NOT faked in here.
 
 Verified live 2026-11-18 from the Mumbai server: home 200 with real
 drama cards; ``/search?q=tere+bin`` 200, first "Tere Bin" (Har Pal
@@ -51,9 +56,6 @@ _DRAMA_RE = re.compile(r"^/drama/(\d+-[a-z0-9\-]+)/?$")
 _EPISODE_RE = re.compile(
     r"^/drama/\d+-[a-z0-9\-]+/episode/(\d+)-[a-z0-9\-]+/?$")
 _EP_NUM_RE = re.compile(r"(?i)episode\s*(\d+)")
-_VIDEO_ID_RE = re.compile(r'"videoId"\s*:\s*"([A-Za-z0-9_\-]{11})"')
-_EMBED_URL_RE = re.compile(
-    r"https://www\.youtube\.com/embed/([A-Za-z0-9_\-]{11})")
 
 
 def _path_of(href):
@@ -265,28 +267,10 @@ class PKDramas(Source):
         }
 
     def streams(self, episode_data):
-        """Episode page -> its official YouTube embed as an embed stream."""
-        ep_url = (episode_data or "").strip()
-        if not ep_url.startswith("http"):
-            return {"streams": [], "subtitles": []}
-        try:
-            resp = get(ep_url, timeout=30)
-            resp.raise_for_status()
-        except Exception:
-            return {"streams": [], "subtitles": []}
-        # The videoId sits in the Next.js RSC payload with escaped
-        # quotes (\"videoId\":\"...\") — unescape before matching.
-        # JSON-LD embedUrl is the second source of the same id.
-        text = resp.text.replace('\\"', '"')
-        m = _VIDEO_ID_RE.search(text) or _EMBED_URL_RE.search(text)
-        if not m:
-            return {"streams": [], "subtitles": []}
-        return {"streams": [{
-            "name": "PKDramas YouTube",
-            "url": "https://www.youtube.com/embed/%s" % m.group(1),
-            "quality": None,
-            "type": "embed",
-            "headers": {"Referer": ep_url},
-            "proxy": False,
-            "label": "YouTube (official upload)",
-        }], "subtitles": []}
+        """No direct stream (see module docstring): the episode's
+        official YouTube upload is geo-blocked from this server's
+        country, so no direct HLS/MP4 can be extracted server-side,
+        and the iframe ``embed`` return is gone for good (StreamHub
+        plays nothing through iframes). Empty streams, so the app
+        drops the item instead of showing a dead Play button."""
+        return {"streams": [], "subtitles": []}

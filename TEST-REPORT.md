@@ -3,6 +3,74 @@
 Date: 2026-11-18 (PKT). Run: `tests/test_live.py` (all sources, real sites).
 Result: **81/90 endpoints passed** — 13 of 15 sources fully working, 1 dropped, 1 query artifact.
 
+## v1.4.1 — three gaps found by live verification, fixed + re-verified live
+
+Unit suites: cache 13/13, animedekho 34/34, hindi 46/46,
+proxy-rewrite 16/16, movies 47/47, v14 25/25, moviebox 19/19,
+v141 20/20 (new) — **220/220, no regressions**.
+
+### GAP 1 — category + lang filter (before → after, live)
+
+| Query | v1.4 (live) | v1.4.1 (live) |
+|---|---|---|
+| `/api/latest?lang=hindi&category=cdrama` | 0 items + `no source supports category: cdrama` | **30 items** (dramacool) |
+| `/api/latest?lang=hindi&category=kdrama` | 39 items (CKDub only) | **69 items** (CKDub + DramaCool) |
+| `/api/latest?lang=hindi&category=pakistani` | 20 items | 20 items (unchanged) |
+| `/api/latest?lang=hindi&category=hollywood` | 18 items | 18 items (unchanged) |
+| `/api/latest?lang=hindi&category=nope` | 0 items + errors entry | 0 items + errors entry (unchanged) |
+
+### GAP 2 — embed-only streams (before → after, live)
+
+- DramaCool, "The Confession Truth" ep 1: v1.4 returned
+  `{"type": "embed", "url": "https://hglink.to/e/f140wjqkye3o", ...}`
+  (proof: only the embed page loading 200). v1.4.1 returns one direct
+  stream: `{"type": "hls", "url": "https://cwfuommwagyrfcg6.
+  retailplatform.shop/dwjdqozeoybz/hls3/01/15268/2xxqmkpq929u_n/
+  master.txt", "quality": 720, "proxy": true, "label": "DramaCool
+  720p", "headers": {"Referer": "https://hanerix.com/e/exu5fvn2tqdg"}}`.
+  First-frame proof through the LIVE `/api/proxy` (Referer required —
+  direct fetch without it 404s): master playlist **200** (rewritten,
+  variant `index-v1-a1.txt`) → variant playlist **200** (25,098 bytes,
+  108 segments) → first segment **200**, `video/MP2T`, 1,302,840 bytes,
+  first bytes `47 40` (MPEG-TS sync). The embed chain (verified by
+  deobfuscating `hgcloud.to/main.js` with webcrack and running the
+  player JS under a jwplayer stub): `hgcloud.to/e/<id>` → JS redirect
+  to `hanerix.com`/`audinifer.com`/`vibuxer.com` → JWPlayer page whose
+  stream URL is inside a Dean Edwards `eval(p,a,c,k,e,d)` packed
+  block, unpacked server-side (unit-tested against the real saved
+  player page `tests/fixtures/dc_hg_player.html`). yt-dlp has NO
+  extractor for hgcloud; DooD is removed from yt-dlp (piracy policy).
+- PKDramas: v1.4 returned YouTube `embed/FOayEzY3C3o`. v1.4.1 returns
+  `{"streams": [], "subtitles": []}` for every episode — **unplayable
+  via this API, by measurement, not by choice.** yt-dlp 2026.10.26
+  (installed in a throwaway venv on the server for the probe, not
+  wired in) answers for all 4 probed Tere Bin episodes
+  (FOayEzY3C3o, RV-YXQOvgp4, SdydH3Wskcw, Td-09uci4NM):
+  `Video unavailable. This content is currently unavailable in this
+  country because of an order from the government related to national
+  security or public order` — the official uploads are geo-blocked in
+  India, where the server runs. No fake was wired; the catalogue
+  (search/home/details) still works and the app drops items with no
+  streams instead of showing a dead Play button.
+
+### GAP 3 — MovieBox empty streams (before → after, live)
+
+`/api/search?q=avengers hindi&type=movie&source=moviebox` → 12 items.
+v1.4: 3 of them returned `streams: []` — "Avengers"
+(6891610990048693368), "Captain America: The First Avenger - The
+Transformation" (4744425413315887552), "Avengers: Doom of the World"
+(6288431937149617232). Diagnosis: NOT a `streams()` bug — all three
+carry `hasResource: false` + an empty `detailUrl` in the native API
+(the H5 play endpoint has no resource for them). v1.4.1 filters
+`hasResource is False` out of search/home and makes `details()`
+return an error for them, so the search now returns **9 playable
+movies, 0 dead**. Verified live after deploy: the first result ("The
+Avengers [Hindi]") → 2 MP4s (480p/720p); second Hindi-dub result
+("Avengers: Infinity War [Hindi]") → 1 MP4; first frame via
+`/api/proxy` Range GET → **206 + `ftyp`** for both. Also: empty
+`/api/streams` results are no longer cached (a transient upstream
+blip can't poison the key for 10 minutes).
+
 ## v1.4 — catalog expansion + auto-update + MovieBox, verified live on the deployed server (Oracle Mumbai)
 
 Unit suites: cache 13/13, animedekho 34/34, hindi 46/46,

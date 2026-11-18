@@ -21,7 +21,7 @@ anime-api/
 The shared contract every source follows lives in
 `INTERFACE.md` (in this repo).
 
-## Source status — live-tested 2026-11-18 (v1.4)
+## Source status — live-tested 2026-11-18 (v1.4.1)
 
 Full per-endpoint results: `TEST-REPORT.md` (81/90 endpoints passed).
 
@@ -39,9 +39,9 @@ Full per-endpoint results: `TEST-REPORT.md` (81/90 endpoints passed).
 | Multimovies (`multimovies`) | Hindi | ✅ Working — search, home, details, streams (Cineverse m3u8 1080p, Hindi audio default) |
 | IndStream (`indstream`) | Hindi | ✅ Working — search, home, details, streams (Vidly m3u8 1080p, Hindi audio track) |
 | CKDub (`ckdub`) | Hindi | ✅ Working — K-drama Hindi dub; search, home, details, streams (`embed` player) |
-| DramaCool (`dramacool`) | English | ✅ Working — K/C-drama English sub; search, home, details, streams (`embed` player) |
-| PKDramas (`pkdramas`) | Hindi | ✅ Working — Pakistani dramas, official YouTube embeds; search, home, details, streams |
-| MovieBox (`moviebox`) | Hindi | ✅ Working — Hollywood/Hindi-dub movies; search, home, details, streams (MP4 360p–1080p, `proxy=true`) |
+| DramaCool (`dramacool`) | English | ✅ Working — K/C-drama English sub; search, home, details, streams (**direct HLS 720p**, `proxy=true`, `type: "hls"` — v1.4.1, no embeds) |
+| PKDramas (`pkdramas`) | Hindi | ⚠️ **Unplayable via this API** — catalogue (search/home/details) works, but `streams` is always empty: episodes are official YouTube uploads geo-blocked in India (server country), and embeds are never returned (v1.4.1) |
+| MovieBox (`moviebox`) | Hindi | ✅ Working — Hollywood/Hindi-dub movies; search, home, details, streams (MP4 360p–1080p, `proxy=true`); `hasResource: false` titles filtered out of results (v1.4.1) |
 
 ### v1.4 changes (2026-11-18) — catalog expansion + auto-update + MovieBox
 
@@ -121,6 +121,60 @@ disabled, JS-rendered grid), hianime.to (521), animekai.to (connection
 reset), myasiantv.cx (410), KissKH (403 Cloudflare). No new anime
 source verified; no additional Hollywood source beyond MovieBox +
 the existing movie sources.
+
+### v1.4.1 changes (2026-11-18) — three gaps found by live verification
+
+The v1.4 report's claims were re-checked firsthand against the LIVE API
+and three gaps were real. Before → after (all numbers measured live
+from the Mumbai server, see `TEST-REPORT.md`):
+
+- **GAP 1 — category + lang filter dropped real items.** Before:
+  `/api/latest?lang=hindi&category=cdrama` → 0 items + `no source
+  supports category: cdrama`; `lang=hindi&category=kdrama` → 39 items
+  (CKDub only). Cause: `_lang_sources('hindi')` excluded DramaCool
+  (an English source) before the category filter ran. After: a
+  category query returns that category's items regardless of the lang
+  filter — `lang=hindi&category=cdrama` → **30 items**,
+  `lang=hindi&category=kdrama` → **69 items** (CKDub + DramaCool),
+  `pakistani` → 20, `hollywood` → 18; an unknown category still
+  returns empty results + an `errors` entry, never other items.
+- **GAP 2 — DramaCool + PKDramas streams were embed-only.** The v1.4
+  "first-frame proof" was only the embed page loading HTTP 200, not a
+  playing frame — and StreamHub plays nothing through iframes.
+  After: **DramaCool resolves to direct HLS.** The embed host
+  (hglink.to / hgcloud.to) is only a JS redirector to a JWPlayer page
+  (hanerix.com etc.) whose stream URL sits in a Dean Edwards
+  `eval(p,a,c,k,e,d)` packed block; the module unpacks it server-side
+  (no JS engine) and returns the direct `master.txt` HLS URL as
+  `type: "hls"`, `proxy: true`, with the player-page Referer (the CDN
+  404s without it). First-frame proof, live through `/api/proxy`:
+  master playlist 200 → variant playlist 200 → first segment 200
+  (`video/MP2T`, 1,302,840 bytes, MPEG-TS sync byte). **PKDramas
+  cannot direct-play from this server and is reported honestly:**
+  every probed episode (Tere Bin ep 1–4) answers via yt-dlp 2026.10.26
+  `Video unavailable. This content is currently unavailable in this
+  country because of an order from the government related to national
+  security or public order` — the official YouTube uploads are
+  geo-blocked in India, where the server runs. No fake was wired:
+  `streams()` returns empty so the app drops those items instead of
+  showing a dead Play button.
+- **GAP 3 — MovieBox streams empty for 3 of 12 search results.**
+  Diagnosis (not a `streams()` bug): those titles carry
+  `hasResource: false` + an empty `detailUrl` in the native API —
+  they have no playable resource at all. After: `_subject_to_item`
+  filters `hasResource is False` out of search/home, and `details()`
+  returns an error for them. The "Avengers Hindi" search now returns
+  9 playable movies (was 12 with 3 dead); the first result
+  ("The Avengers [Hindi]") returns 2 MP4s, first frame 206 + `ftyp`
+  via `/api/proxy`. Also: empty `/api/streams` results are no longer
+  cached, so a transient upstream blip can't poison the key for 10
+  minutes.
+- Tests: **220/220 unit** (13 cache + 34 animedekho + 46 hindi + 16
+  proxy-rewrite + 47 movies + 25 v14 + 19 moviebox + 20 v1.4.1, new),
+  no regressions. New: `tests/test_v141_unit.py` (category+lang
+  combinations, packer unpack against the real saved player page
+  `tests/fixtures/dc_hg_player.html`, embed→direct resolution,
+  hasResource filtering, empty-streams cache behaviour).
 
 ### v1.3 changes (2026-11-18) — Hindi-dub MOVIES + K-drama
 

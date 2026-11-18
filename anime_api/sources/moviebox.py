@@ -219,6 +219,15 @@ def _subject_to_item(sub):
         # Series (2) and other types have no playable stream via the
         # guest H5 path — never surface them as results.
         return None
+    if sub.get("hasResource") is False:
+        # No playable resource at all: the H5 play endpoint answers
+        # ``hasResource: false`` + empty streams for these titles
+        # (e.g. "Avengers" 6891610990048693368, "Captain America:
+        # The First Avenger - The Transformation" 4744425413315887552,
+        # "Avengers: Doom of the World" 6288431937149617232 — all with
+        # an empty detailUrl). Never surface them as results, or the
+        # app shows a dead Play button (v1.4.1).
+        return None
     sid = sub.get("subjectId")
     if sid is None:
         return None
@@ -468,6 +477,11 @@ class MovieBox(Source):
         title = (d.get("title") or "").strip()
         if not title:
             return {"error": "movie not found"}
+        if d.get("hasResource") is False:
+            # Unplayable title (see _subject_to_item): details still
+            # answers, but there is no stream — say so instead of
+            # listing an episode the app cannot play (v1.4.1).
+            return {"error": "movie has no playable resource"}
         cover = d.get("cover") or {}
         poster = cover.get("url") if isinstance(cover, dict) else None
         year = None
