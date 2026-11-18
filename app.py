@@ -4,20 +4,33 @@ Routes (all JSON, CORS enabled) — see INTERFACE.md and README.md:
   GET /health
   GET /api/sources
   GET /api/search?q=&lang=&source=&page=1
-  GET /api/trending|popular|latest?lang=&source=&page=1
+  GET /api/trending|popular|latest?lang=&source=&page=1&category=
   GET /api/anime?source=&id=
   GET /api/streams?source=&data=
+  GET /api/widgets
   GET /api/proxy?url=&ua=&referer=   (Range-capable passthrough)
+
+v1.2 speed work: response cache (X-Cache: HIT/MISS), pre-warm thread,
+fast-fail fan-out (a slow source is listed in ``errors``, never gates).
 """
 
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, urljoin
 
 import requests
 from flask import Flask, Response, jsonify, request, stream_with_context
 
-from anime_api.config import FANOUT_TIMEOUT_SECONDS, HOST, PORT
+from anime_api.cache import CACHE
+from anime_api.config import (CACHE_TTL_DETAILS_SECONDS,
+                              CACHE_TTL_LIST_SECONDS,
+                              CACHE_TTL_SEARCH_SECONDS,
+                              CACHE_TTL_STREAMS_SECONDS,
+                              CACHE_TTL_WIDGETS_SECONDS,
+                              FANOUT_TIMEOUT_SECONDS, HOST, PORT,
+                              PREWARM_INTERVAL_SECONDS)
 from anime_api.sources import get_source, list_sources
 
 app = Flask(__name__)
@@ -120,6 +133,87 @@ def _page_param():
         return 1
 
 
+# ------------------------------------------------------------------ cache
+
+def _cache_key(prefix, *parts):
+    return prefix + ":" + "|".join(str(p) for p in parts)
+
+
+def _respond(payload, hit):
+    resp = jsonify(payload)
+    resp.headers["X-Cache"] = "HIT" if hit else "MISS"
+    return resp
+
+
+def _call_home(source, section, page, category):
+    """home() with optional category; falls back if the source lacks it."""
+    if category:
+        try:
+            return source.home(section, page=page, category=category)
+        except TypeError:
+            pass
+    return source.home(section, page=page)
+
+
+def _compute_list(section, lang, source_param, page, category):
+    """The list fan-out, shared by the routes and the pre-warm thread."""
+    sources = _lang_sources(lang)
+    if category:
+        # Only AnimeDekho has category pages (tamil/telugu); other
+        # sources would return their normal home rows, which is wrong.
+        sources = [s for s in sources if s.id == "animedekho"]
+    if source_param != "all":
+        src = get_source(source_param)
+        if src is None:
+            return None, [{"source": source_param,
+                           "error": "unknown source: %s" % source_param}]
+        sources = [s for s in sources if s.id == src.id]
+        if lang == "all" and not category:
+            sources = [src]
+    items, errors = _fan_out(
+        sources, lang,
+        lambda s: _call_home(s, section, page, category))
+    return items, errors
+
+
+def _prewarm_once():
+    """Refresh the hot list keys so the first real user never waits."""
+    jobs = [
+        ("trending", "all", "all", 1, None),
+        ("popular", "all", "all", 1, None),
+        ("latest", "all", "all", 1, None),
+        ("latest", "hindi", "all", 1, None),
+        ("latest", "all", "all", 1, "tamil"),
+        ("latest", "all", "all", 1, "telugu"),
+    ]
+    for section, lang, source_param, page, category in jobs:
+        key = _cache_key("list", section, lang, source_param, page,
+                         category or "")
+        try:
+            items, errors = _compute_list(
+                section, lang, source_param, page, category)
+            if items is not None:
+                CACHE.set(key, {"results": items, "errors": errors},
+                          CACHE_TTL_LIST_SECONDS)
+        except Exception:
+            continue
+
+
+def _prewarm_loop():
+    while True:
+        try:
+            _prewarm_once()
+        except Exception:
+            pass
+        time.sleep(PREWARM_INTERVAL_SECONDS)
+
+
+def _start_prewarm():
+    t = threading.Thread(target=_prewarm_loop, daemon=True,
+                         name="api-prewarm")
+    t.start()
+
+
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "sources": [s.id for s in list_sources()]})
@@ -141,6 +235,10 @@ def api_search():
     lang = request.args.get("lang", "all")
     source_param = request.args.get("source", "all")
     page = _page_param()
+    key = _cache_key("search", query.lower(), lang, source_param, page)
+    cached, hit = CACHE.get(key)
+    if hit:
+        return _respond(cached, True)
     sources = _lang_sources(lang)
     if source_param != "all":
         src = get_source(source_param)
@@ -153,26 +251,29 @@ def api_search():
     items, errors = _fan_out(
         sources, lang, lambda s: s.search(query, page=page)
     )
-    return jsonify({"results": items, "errors": errors})
+    payload = {"results": items, "errors": errors}
+    CACHE.set(key, payload, CACHE_TTL_SEARCH_SECONDS)
+    return _respond(payload, False)
 
 
 def _home_route(section):
     lang = request.args.get("lang", "all")
     source_param = request.args.get("source", "all")
     page = _page_param()
-    sources = _lang_sources(lang)
-    if source_param != "all":
-        src = get_source(source_param)
-        if src is None:
-            return _error("unknown source: %s" % source_param, 404,
-                          source=source_param)
-        sources = [s for s in sources if s.id == src.id]
-        if lang == "all":
-            sources = [src]
-    items, errors = _fan_out(
-        sources, lang, lambda s: s.home(section, page=page)
-    )
-    return jsonify({"results": items, "errors": errors})
+    category = (request.args.get("category") or "").strip().lower() or None
+    key = _cache_key("list", section, lang, source_param, page,
+                     category or "")
+    cached, hit = CACHE.get(key)
+    if hit:
+        return _respond(cached, True)
+    items, errors = _compute_list(section, lang, source_param, page,
+                                  category)
+    if items is None:
+        return _error("unknown source: %s" % source_param, 404,
+                      source=source_param)
+    payload = {"results": items, "errors": errors}
+    CACHE.set(key, payload, CACHE_TTL_LIST_SECONDS)
+    return _respond(payload, False)
 
 
 @app.route("/api/trending")
@@ -200,13 +301,38 @@ def api_anime():
     if src is None:
         return _error("unknown source: %s" % source_param, 404,
                       source=source_param)
+    key = _cache_key("details", source_param, item_id)
+    cached, hit = CACHE.get(key)
+    if hit:
+        return _respond(cached, True)
     try:
         result = src.details(item_id)
     except Exception as exc:  # noqa: BLE001
         return _error(str(exc), 502, source=source_param)
+    if result is None:
+        # v1.2: a source that finds nothing used to return JSON null
+        # with HTTP 200 — now a proper 502 so clients can show an error.
+        return _error("details not found", 502, source=source_param)
     if isinstance(result, dict) and result.get("error"):
         return _error(result["error"], 502, source=source_param)
-    return jsonify(result)
+    CACHE.set(key, result, CACHE_TTL_DETAILS_SECONDS)
+    return _respond(result, False)
+
+
+@app.route("/api/widgets")
+def api_widgets():
+    """AnimeDekho sidebar widgets: updates, release schedule, upcoming."""
+    key = _cache_key("widgets", "animedekho")
+    cached, hit = CACHE.get(key)
+    if hit:
+        return _respond(cached, True)
+    try:
+        from anime_api.sources.animedekho import fetch_widgets
+        payload = fetch_widgets()
+    except Exception as exc:  # noqa: BLE001
+        return _error(str(exc), 502, source="animedekho")
+    CACHE.set(key, payload, CACHE_TTL_WIDGETS_SECONDS)
+    return _respond(payload, False)
 
 
 @app.route("/api/streams")
@@ -219,10 +345,16 @@ def api_streams():
     if src is None:
         return _error("unknown source: %s" % source_param, 404,
                       source=source_param)
+    key = _cache_key("streams", source_param, data)
+    cached, hit = CACHE.get(key)
+    if hit:
+        return _respond(cached, True)
     try:
         result = src.streams(data)
     except Exception as exc:  # noqa: BLE001
         return _error(str(exc), 502, source=source_param)
+    if result is None:
+        return _error("streams not found", 502, source=source_param)
     if isinstance(result, dict) and result.get("error"):
         return _error(result["error"], 502, source=source_param)
     if isinstance(result, dict):
@@ -237,7 +369,8 @@ def api_streams():
                 sub["url"] = _public_base() + "/api/proxy?" + urlencode(params)
                 sub.pop("referer", None)
                 sub.pop("ua", None)
-    return jsonify(result)
+    CACHE.set(key, result, CACHE_TTL_STREAMS_SECONDS)
+    return _respond(result, False)
 
 
 def _public_base():
@@ -342,4 +475,5 @@ def api_proxy():
 
 
 if __name__ == "__main__":
+    _start_prewarm()
     app.run(host=HOST, port=PORT, debug=False, threaded=True)

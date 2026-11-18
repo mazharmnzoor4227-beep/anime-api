@@ -32,44 +32,38 @@ Endpoints used (all public, no login):
   air_date, still, url}]}``. Movies have no seasons: one episode with
   ``episode_id`` 0 (the site's own watch flow uses
   ``/movie-hindi/<slug>/?watch=1`` with ``data-term="0"``).
-* ``streams`` — ``POST {host}/wp-json/dgt/v1/watch`` with JSON body
-  ``{"post_id": <id>, "episode_id": <id>}`` and header
-  ``X-WP-Nonce: <nonce>``. The nonce is scraped from the inline
-  ``DGT={"rest": "...", "nonce": "..."}`` config on any site page; a
-  POST without it returns ``{"gated": true, "sources": []}``. Response
-  ``{"gated": false, "sources": [{kind, server, language, quality,
-  embed, download, show_embed, rank_embed, ...}]}``. Only
-  ``kind == "embed"`` sources with ``show_embed`` are returned.
-
-Episode ``data`` format: JSON string
-``{"post_id": <int>, "episode_id": <int>, "url": "<episode page URL>"}``.
-
-Stream ``type`` is ``"embed"`` (new — see INTERFACE.md): the URL is the
-site's own iframe embed page (``player.php?url=...``,
-``aaa/myth/play2.php?id=...`` or ``/embed/<post>/<season>-<ep>``), which
-itself iframes the video host (AbyssPlayer, Ravok, ...). Those hosts are
-JWPlayer shells whose file URL is only assembled in JS, so there is no
-direct .m3u8/.mp4 to return server-side; the website plays embed streams
-in an ``<iframe>``, exactly like the source site does. ``proxy`` is False
-(the embed pages are same-origin to animedekho.tv and need no proxy).
-Download-kind sources (``download.php`` gate pages) are skipped — they are
-not playable streams.
+* ``streams`` — v1.2: NO watch call any more. The ``/wp-json/dgt/v1/watch``
+  endpoint is ad-gated for datacenter IPs (returns ``{"gated": true}``
+  since ~2026-11-18; the gate is the site's own "skip the ad once per
+  24h" wall and must NOT be automated around). Instead the embed URL is
+  built directly: ``{host}/embed/<post_id>/<season>-<episode>`` — that
+  page is the site's own player surface and is publicly reachable (HTTP
+  200, verified 2026-11-18); the user's own browser deals with the
+  site's ad-skip exactly as on the real site. Stream ``type`` is
+  ``"embed"``, played in an ``<iframe>``. Episode ``data`` now carries
+  ``season`` + ``number`` so the URL can be built; old-format data
+  (post_id/episode_id/url only) falls back to the episode page URL
+  itself as the embed target.
+* ``home`` — ``category`` (``"tamil"`` / ``"telugu"``) fetches
+  ``/category/<name>/`` and returns those dubs (audio_lang set).
+* ``details`` also parses Characters (``.dgt-cast``) and Hindi Voice
+  Cast (``.dgt-vcast__grid``) from the series page when present.
+* ``fetch_widgets()`` — the site-wide sidebar: Other updates
+  (``ul.dgt-upd__list``), Release schedule (``.dgt-sch__day``),
+  Upcoming shows (list under the ``#dgt-up-h`` heading).
 """
 
 import html as _html
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote_plus
 
-import requests
 from bs4 import BeautifulSoup
 
-from anime_api.http import BROWSER_UA, get, get_json
+from anime_api.http import get, get_json
 from anime_api.sources.base import Source
 
-_NONCE_RE = re.compile(r'DGT=\{"rest":"[^"]*","nonce":"([0-9a-f]+)"')
-_NONCE_LOOSE_RE = re.compile(r'"nonce":"([0-9a-f]{10,})"')
-_QUALITY_RE = re.compile(r"(\d{3,4})p", re.IGNORECASE)
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 
 # Rows on /home/ per section (matched by prefix on the row heading).
@@ -110,17 +104,6 @@ def _poster_of(img, base):
     return None
 
 
-def _quality(server, language):
-    for text in (language or "", server or ""):
-        match = _QUALITY_RE.search(text or "")
-        if match:
-            try:
-                return int(match.group(1))
-            except ValueError:
-                continue
-    return None
-
-
 class AnimeDekho(Source):
     id = "animedekho"
     name = "AnimeDekho"
@@ -128,42 +111,12 @@ class AnimeDekho(Source):
     domain_key = ""  # not a CloudStream extension; no Firebase key
     default_url = "https://animedekho.tv"
 
-    def __init__(self):
-        self._nonce = None
-
     # -- fetching ----------------------------------------------------------
 
     def _soup(self, url):
         resp = get(url, timeout=30)
         resp.raise_for_status()
         return BeautifulSoup(resp.text, "lxml")
-
-    def _nonce_value(self, refresh=False, url=None):
-        """WP REST nonce from the inline DGT config (cached per instance).
-
-        The homepage does NOT carry the ``dgt-store`` script (LiteSpeed
-        cache serves a reduced page), but series/episode pages do — so the
-        episode page (``url``, usually the watch referer) is tried first
-        and the homepage only as a fallback.
-        """
-        if self._nonce and not refresh:
-            return self._nonce
-        candidates = []
-        if url:
-            candidates.append(url)
-        candidates.append(self.base_url + "/")
-        for cand in candidates:
-            try:
-                resp = get(cand, timeout=30)
-                text = resp.text or ""
-            except Exception:
-                continue
-            for rx in (_NONCE_RE, _NONCE_LOOSE_RE):
-                match = rx.search(text)
-                if match:
-                    self._nonce = match.group(1)
-                    return self._nonce
-        return None
 
     def _parse_cards(self, soup):
         """a.dgt-card elements -> item dicts (deduped, order kept)."""
@@ -247,8 +200,22 @@ class AnimeDekho(Source):
                 continue
         return items
 
-    def home(self, section, page=1):
+    def home(self, section, page=1, category=None):
+        """Rows from /home/ (or /browse/ for page > 1).
+
+        v1.2: ``category`` ("tamil" / "telugu") fetches that language's
+        category page instead — the site's Hindi/Tamil/Telugu sections.
+        Items from a category page carry ``audio_lang`` so clients can
+        label them correctly.
+        """
         try:
+            if category in ("tamil", "telugu"):
+                soup = self._soup(
+                    "%s/category/%s/" % (self.base_url, category))
+                items = self._parse_cards(soup)
+                for it in items:
+                    it["audio_lang"] = category
+                return items
             if page <= 1:
                 soup = self._soup(self.base_url + "/home/")
                 return self._row_cards(
@@ -338,8 +305,13 @@ class AnimeDekho(Source):
                     season_numbers.append(num)
             if not season_numbers:
                 season_numbers = [1]
-            for num in sorted(season_numbers):
-                episodes = self._season_episodes(post_id, num)
+            # v1.2: fetch seasons in parallel — sequential calls made
+            # details() take 3.4s+ for a 5-season series.
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                fetched = list(pool.map(
+                    lambda n: (n, self._season_episodes(post_id, n)),
+                    sorted(season_numbers)))
+            for num, episodes in fetched:
                 if episodes:
                     seasons.append({
                         "number": num,
@@ -374,7 +346,64 @@ class AnimeDekho(Source):
             "type": "movie" if is_movie else "anime",
             "audio": ["dub"],
             "seasons": seasons,
+            "characters": self._parse_cast(soup),
+            "voice_cast": self._parse_voice_cast(soup),
         }
+
+    def _parse_cast(self, soup):
+        """Characters block (.dgt-cast under a 'Characters' heading)."""
+        out = []
+        for block in soup.select(".dgt-cast"):
+            head = block.find_previous(["h2", "h3"])
+            label = head.get_text(" ", strip=True) if head else ""
+            if "Character" not in label:
+                continue
+            for item in block.select(".dgt-cast__item"):
+                try:
+                    spans = item.select(":scope > span")
+                    name = ""
+                    for sp in spans:
+                        if "dgt-cast__img" not in (sp.get("class") or []):
+                            name = sp.get_text(" ", strip=True)
+                            break
+                    role_el = item.select_one(".dgt-cast__role")
+                    role = role_el.get_text(strip=True) if role_el else ""
+                    out.append({
+                        "name": name,
+                        "image": _poster_of(
+                            item.select_one("img"), self.base_url),
+                        "role": role,
+                    })
+                except Exception:
+                    continue
+        return out
+
+    def _parse_voice_cast(self, soup):
+        """Hindi Voice Cast grid (.dgt-vcast__grid)."""
+        out = []
+        for item in soup.select(".dgt-vcast__item"):
+            try:
+                char_el = item.select_one(".dgt-vcast__char")
+                char = ""
+                badge = ""
+                if char_el is not None:
+                    badge_el = char_el.select_one(".dgt-vcast__badge")
+                    badge = badge_el.get_text(strip=True) if badge_el else ""
+                    char = char_el.get_text(" ", strip=True)
+                    if badge:
+                        char = char.replace(badge, "").strip()
+                va_el = item.select_one(".dgt-vcast__va")
+                actor = va_el.get_text(" ", strip=True) if va_el else ""
+                out.append({
+                    "character": char,
+                    "actor": actor,
+                    "image": _poster_of(
+                        item.select_one("img"), self.base_url),
+                    "role": badge,
+                })
+            except Exception:
+                continue
+        return out
 
     def _season_episodes(self, post_id, season):
         """Episodes of one season via the dgt REST endpoint."""
@@ -397,9 +426,13 @@ class AnimeDekho(Source):
                 episodes.append({
                     "number": number,
                     "title": name,
+                    # v1.2: season + number included so streams() can
+                    # build the /embed/<post>/<season>-<ep> URL directly.
                     "data": json.dumps({
                         "post_id": post_id,
                         "episode_id": int(ep_id) if ep_id else 0,
+                        "season": season,
+                        "number": number,
                         "url": raw.get("url") or "",
                     }),
                 })
@@ -409,81 +442,92 @@ class AnimeDekho(Source):
         return episodes
 
     def streams(self, episode_data):
+        """Direct embed URL — no watch API call (v1.2).
+
+        The ``/wp-json/dgt/v1/watch`` endpoint is ad-gated for datacenter
+        IPs (``{"gated": true}`` since 2026-11-18): the site's own
+        "skip the ad once per 24h" wall, which must not be automated
+        around. The embed page itself
+        (``{host}/embed/<post_id>/<season>-<episode>``) is publicly
+        reachable (HTTP 200) and is the site's own player surface, so
+        the stream URL is built directly from the episode data. The
+        user's own browser deals with the site's ad-skip exactly as on
+        the real site. Old-format data without season/number falls back
+        to the episode page URL itself as the embed target.
+        """
         try:
             parsed = json.loads(str(episode_data or ""))
             post_id = int(parsed.get("post_id") or 0)
-            episode_id = int(parsed.get("episode_id") or 0)
+            season = parsed.get("season")
+            number = parsed.get("number")
             referer = parsed.get("url") or self.base_url + "/"
         except Exception:
             return {"streams": [], "subtitles": []}
         if not post_id:
             return {"streams": [], "subtitles": []}
-        payload = {"post_id": post_id, "episode_id": episode_id}
-        body = self._watch(payload, referer)
-        if body is None:
-            return {"streams": [], "subtitles": []}
-        if body.get("gated"):
-            return {"streams": [], "subtitles": []}
-        streams = []
-        sources = body.get("sources") or []
-        sources = sorted(
-            sources, key=lambda s: s.get("rank_embed") if isinstance(
-                s.get("rank_embed"), int) else 9999)
-        for src in sources:
-            try:
-                if src.get("kind") != "embed" or not src.get("show_embed"):
-                    continue
-                embed = src.get("embed") or ""
-                if not embed.startswith("http"):
-                    continue
-                server = str(src.get("server") or "Server").strip() or "Server"
-                quality = _quality(server, src.get("language"))
-                label = "AnimeDekho %s" % server
-                if quality:
-                    label += " (%dp)" % quality
-                streams.append({
-                    "name": "AnimeDekho",
-                    "url": embed,
-                    "quality": quality,
-                    "type": "embed",
-                    "headers": {"Referer": referer},
-                    "proxy": False,
-                    "label": label,
-                })
-            except Exception:
+        try:
+            season = int(season)
+            number = int(number)
+        except (TypeError, ValueError):
+            season = number = None
+        if season is not None and number is not None:
+            embed = "%s/embed/%d/%d-%d" % (
+                self.base_url, post_id, season, number)
+        else:
+            embed = referer
+        return {"streams": [{
+            "name": "AnimeDekho",
+            "url": embed,
+            "quality": None,
+            "type": "embed",
+            "headers": {"Referer": referer},
+            "proxy": False,
+            "label": "AnimeDekho Player",
+        }], "subtitles": []}
+
+
+def fetch_widgets(base_url="https://animedekho.tv"):
+    """Site-wide sidebar widgets, parsed from the series/home HTML.
+
+    Returns {"updates": [str], "schedule": [{"day": str, "count": int}],
+    "upcoming": [{"title": str, "note": str}]}. Best-effort: any widget
+    that cannot be parsed is returned as an empty list, never an error.
+    """
+    out = {"updates": [], "schedule": [], "upcoming": []}
+    try:
+        resp = get(base_url + "/home/", timeout=30)
+        soup = BeautifulSoup(resp.text, "lxml")
+    except Exception:
+        return out
+    try:
+        for li in soup.select("ul.dgt-upd__list li"):
+            text = li.get_text(" ", strip=True)
+            if text:
+                out["updates"].append(text)
+    except Exception:
+        pass
+    try:
+        for day in soup.select(".dgt-sch__day"):
+            text = day.get_text(" ", strip=True)
+            if not text:
                 continue
-        return {"streams": streams, "subtitles": []}
-
-    def _watch(self, payload, referer):
-        """POST /wp-json/dgt/v1/watch; returns the parsed body or None.
-
-        Retries once with a fresh nonce when the first attempt is gated
-        (a missing/stale nonce returns gated=true with no sources).
-        """
-        url = self.base_url + "/wp-json/dgt/v1/watch"
-        for attempt in range(2):
-            nonce = self._nonce_value(refresh=(attempt > 0), url=referer)
-            headers = {
-                "User-Agent": BROWSER_UA,
-                "Content-Type": "application/json",
-                "Referer": referer,
-            }
-            if nonce:
-                headers["X-WP-Nonce"] = nonce
+            parts = text.rsplit(" ", 1)
             try:
-                resp = requests.post(url, json=payload, headers=headers,
-                                     timeout=30)
-            except Exception:
-                return None
-            if resp.status_code >= 400:
-                return None
-            try:
-                body = resp.json()
-            except Exception:
-                return None
-            if not isinstance(body, dict):
-                return None
-            if body.get("gated") and attempt == 0:
-                continue  # stale nonce: refresh and retry once
-            return body
-        return None
+                count = int(parts[1])
+                out["schedule"].append({"day": parts[0], "count": count})
+            except (IndexError, ValueError):
+                out["schedule"].append({"day": text, "count": 0})
+    except Exception:
+        pass
+    try:
+        head = soup.select_one("#dgt-up-h")
+        if head is not None:
+            section = head.find_parent("section") or head.find_parent("div")
+            if section is not None:
+                for row in section.select("li, a"):
+                    text = row.get_text(" ", strip=True)
+                    if text and "Upcoming shows" not in text:
+                        out["upcoming"].append({"title": text, "note": ""})
+    except Exception:
+        pass
+    return out

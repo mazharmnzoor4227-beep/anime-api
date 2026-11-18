@@ -53,6 +53,10 @@ class Source:
   for JSON sources the slug (details() accepts it).
   `home(section, page)`: section in {"trending","popular","latest"}. Map to the
   provider's real sections (see per-source contract). page>=1.
+  Optional `home(section, page, category=...)`: only AnimeDekho implements it
+  ("tamil"/"telugu" — that language's category page); other sources ignore it.
+  Optional details keys (AnimeDekho): `"characters": [{"name","image","role"}]`,
+  `"voice_cast": [{"character","actor","image","role"}]`.
 - `details(item_id)` -> dict:
   `{ "id": str, "title": str, "poster": str|None, "banner": str|None,
      "plot": str|None, "genres": [str], "year": int|None, "status": "ongoing"|"completed"|None,
@@ -111,14 +115,26 @@ Routes (all JSON, CORS enabled):
    hindi -> only hindi sources; english -> only english sources; japanese -> english
    sources with audio containing "sub" (Japanese audio + subtitles); all -> all sources.
    On a source error, include it in "errors": [{source, error}] and keep the rest.)
-- `GET /api/trending|popular|latest?lang=&source=&page=1` (same fan-out)
+- `GET /api/trending|popular|latest?lang=&source=&page=1&category=<tamil|telugu>`
+  (same fan-out; `category` restricts the fan-out to AnimeDekho)
 - `GET /api/anime?source=<id>&id=<item_id>` -> details()
 - `GET /api/streams?source=<id>&data=<episode_data>` -> streams()
+- `GET /api/widgets` -> AnimeDekho sidebar: {"updates": [str],
+  "schedule": [{"day", "count"}], "upcoming": [{"title", "note"}]}
 - `GET /api/proxy?url=<url-encoded>` -> Range-capable passthrough (streaming response,
   forwards Range + User-Agent + Referer headers from query params `ua`/`referer`,
   for hotlink-protected / IP-bound links). Must validate url starts with http(s).
 - Errors: {"error": "<message>", "source": "<id>"} with HTTP 502 on upstream failure,
-  400 on bad params, 404 on unknown source.
+  400 on bad params, 404 on unknown source. A source whose details()/streams()
+  returns None is also a 502 (was JSON `null` with 200 before v1.2).
+- v1.2 speed: list/search/details/streams/widgets responses are cached in-memory
+  (TTL: lists 10 min, search 5 min, details 30 min, streams 2 min, widgets 30 min;
+  cache key includes lang/source/query/page/category) and carry an
+  `X-Cache: HIT|MISS` header. A background pre-warm thread refreshes the hot
+  list keys (trending/popular/latest all + latest hindi + tamil/telugu) every
+  5 min so the first user never pays a cold scrape. Fan-out timeout is 12s
+  (was 45s); a source still running at the deadline is listed in `errors`
+  and never gates the response.
 
 ## Live testing (every agent tests its own modules before finishing)
 `tests/test_live.py` (scaffold agent creates it; each agent adds tests for its sources):

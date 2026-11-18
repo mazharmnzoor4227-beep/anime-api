@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from anime_api.sources.animedekho import AnimeDekho, _quality  # noqa: E402
+from anime_api.sources.animedekho import AnimeDekho  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -76,6 +76,12 @@ DETAIL_HTML = """
 <div class="dgt-overview">Follow the feud between the Joestar Family and Dio Brando.</div>
 <button class="dgt-tab" data-season="1">Season 1 (26)</button>
 <button class="dgt-tab" data-season="2">Season 2 (48)</button>
+<h2>Characters</h2>
+<div class="dgt-cast">
+<span class="dgt-cast__item"><span class="dgt-cast__img"><img data-src="https://s4.anilist.co/file/anilistcdn/character/large/b11222.png"></span><span>Jolyne Kuujou</span><small class="dgt-cast__role is-main">Main</small></span>
+</div>
+<h2>Hindi Voice Cast</h2>
+<div class="dgt-vcast__grid"><div class="dgt-vcast__item"><span class="dgt-vcast__img"><img data-src="https://animedekho.tv/wp-content/uploads/va/krutarth-trivedi.jpg"></span><span class="dgt-vcast__txt"><span class="dgt-vcast__char">Gyro Zeppeli<span class="dgt-vcast__badge">Main</span></span><span class="dgt-vcast__va"><a href="#">Krutarth Trivedi</a></span></span></div></div>
 </body></html>
 """ % json.dumps(SNAPSHOT).replace("'", "&#x27;")
 
@@ -90,34 +96,12 @@ EPISODES_JSON = {"series_id": 10145, "season": 1, "episodes": [
      "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-1x2/"},
 ]}
 
-WATCH_JSON = {"gated": False, "sources": [
-    {"id": 0, "kind": "embed", "server": "HydraX", "language": "1080p",
-     "quality": "Hindi Dub",
-     "embed": "https://animedekho.tv/player.php?url=TOKEN1",
-     "download": "https://animedekho.tv/download.php?url=TOKEN1",
-     "show_embed": True, "show_download": True, "rank_embed": 3},
-    {"id": 1, "kind": "embed", "server": "VidSrc-480p", "language": "1080p",
-     "quality": "Hindi Dub",
-     "embed": "https://animedekho.tv/player.php?url=TOKEN2",
-     "download": "https://animedekho.tv/download.php?url=TOKEN2",
-     "show_embed": False, "show_download": True, "rank_embed": 11},
-    {"id": 4, "kind": "download", "server": "GDFlix-480p", "language": "1080p",
-     "quality": "Hindi Dub",
-     "embed": "", "download": "https://animedekho.tv/download.php?url=TOKEN3",
-     "show_embed": False, "show_download": True, "rank_embed": 9999},
-    {"id": 5, "kind": "embed", "server": "Vidstream", "language": "",
-     "quality": "",
-     "embed": "https://animedekho.tv/embed/45790/4-38",
-     "download": "", "show_embed": True, "rank_embed": 0},
-]}
+# WATCH_JSON / NONCE_HTML fixtures removed in v1.2: streams() no longer
+# calls the (ad-gated) watch endpoint, it builds the embed URL directly.
 
-NONCE_HTML = '<script>var DGT={"rest":"https://animedekho.tv/wp-json/dgt/v1/","nonce":"97f7371006","userId":"0"};</script>'
 
-# ---------------------------------------------------------------- quality
-check("quality from language 1080p", _quality("HydraX", "1080p") == 1080)
-check("quality from server suffix", _quality("HubCopy-720p", "") == 720)
-check("quality none", _quality("Vidstream", "") is None)
-check("quality prefers language", _quality("HubCopy-480p", "1080p") == 1080)
+# _quality helper removed in v1.2 (streams are direct embeds now;
+# no server/language quality strings to parse).
 
 # ---------------------------------------------------------------- cards
 from bs4 import BeautifulSoup  # noqa: E402
@@ -180,91 +164,67 @@ if det.get("seasons"):
     check("details: season 1 has 2 eps", len(eps) == 2, repr(eps))
     data = json.loads(eps[0]["data"])
     check("details: ep data json", data == {
-        "post_id": 10145, "episode_id": 59687,
+        "post_id": 10145, "episode_id": 59687, "season": 1, "number": 1,
         "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-1x1/"},
         repr(data))
     check("details: ep title", eps[0]["title"] == "Dio the Invader")
+check("details: characters", len(det.get("characters") or []) == 1
+      and det["characters"][0]["name"] == "Jolyne Kuujou"
+      and det["characters"][0]["role"] == "Main", repr(det.get("characters")))
+check("details: voice cast", len(det.get("voice_cast") or []) == 1
+      and det["voice_cast"][0]["character"] == "Gyro Zeppeli"
+      and det["voice_cast"][0]["actor"] == "Krutarth Trivedi",
+      repr(det.get("voice_cast")))
 
 # ---------------------------------------------------------------- streams
-watch_resp = mock.Mock()
-watch_resp.status_code = 200
-watch_resp.json = mock.Mock(return_value=WATCH_JSON)
-nonce_resp = mock.Mock()
-nonce_resp.text = NONCE_HTML
-nonce_resp.raise_for_status = mock.Mock()
-with mock.patch("anime_api.sources.animedekho.get",
-                return_value=nonce_resp), \
-        mock.patch("requests.post", return_value=watch_resp) as post:
-    out = src.streams(json.dumps({
-        "post_id": 10145, "episode_id": 59928,
-        "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-4x38/"}))
-    _args, kwargs = post.call_args
-    check("streams: nonce header sent",
-          kwargs.get("headers", {}).get("X-WP-Nonce") == "97f7371006",
-          repr(kwargs.get("headers")))
-check("streams: 2 embeds (hidden + download skipped)",
-      len(out.get("streams") or []) == 2, repr(out))
+# v1.2: NO watch call any more (the watch endpoint is ad-gated for
+# datacenter IPs). streams() builds the embed URL directly from the
+# episode data: {host}/embed/<post_id>/<season>-<episode>.
+out = src.streams(json.dumps({
+    "post_id": 10145, "episode_id": 59928, "season": 4, "number": 38,
+    "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-4x38/"}))
+check("streams: 1 direct embed",
+      len(out.get("streams") or []) == 1, repr(out))
 if out.get("streams"):
     first = out["streams"][0]
-    check("streams: rank order (Vidstream first)",
-          first["url"] == "https://animedekho.tv/embed/45790/4-38"
+    check("streams: embed url built from season/episode",
+          first["url"] == "https://animedekho.tv/embed/10145/4-38"
           and first["type"] == "embed" and first["proxy"] is False,
           repr(first))
-    second = out["streams"][1]
-    check("streams: HydraX 1080p label",
-          second["quality"] == 1080
-          and second["label"] == "AnimeDekho HydraX (1080p)"
-          and second["headers"] == {
+    check("streams: referer header kept",
+          first["headers"] == {
               "Referer": "https://animedekho.tv/epi/jojos-bizarre-adventure-4x38/"},
-          repr(second))
+          repr(first))
 check("streams: no subtitles", out.get("subtitles") == [])
 check("streams: bad data empty",
       src.streams("not-json") == {"streams": [], "subtitles": []})
+check("streams: no post_id empty",
+      src.streams(json.dumps({"episode_id": 1})) == {
+          "streams": [], "subtitles": []})
+# old-format data (no season/number) falls back to the episode page
+# URL itself as the embed target.
+out_old = src.streams(json.dumps({
+    "post_id": 10145, "episode_id": 59928,
+    "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-4x38/"}))
+check("streams: legacy data falls back to episode page",
+      len(out_old.get("streams") or []) == 1
+      and out_old["streams"][0]["url"] ==
+      "https://animedekho.tv/epi/jojos-bizarre-adventure-4x38/",
+      repr(out_old))
 
-# gated retry: first attempt gated, second (fresh nonce) works
-gated_resp = mock.Mock()
-gated_resp.status_code = 200
-gated_resp.json = mock.Mock(return_value={"gated": True, "sources": []})
-calls = {"n": 0}
-
-
-def _post_seq(url, json=None, headers=None, timeout=30):
-    calls["n"] += 1
-    return gated_resp if calls["n"] == 1 else watch_resp
-
-
+# ---------------------------------------------------------------- home category
+cat_resp = mock.Mock()
+cat_resp.text = ROW_HTML
+cat_resp.raise_for_status = mock.Mock()
 with mock.patch("anime_api.sources.animedekho.get",
-                return_value=nonce_resp), \
-        mock.patch("requests.post", side_effect=_post_seq):
-    out2 = src.streams(json.dumps({"post_id": 10145, "episode_id": 1, "url": ""}))
-check("streams: gated retry succeeds", len(out2.get("streams") or []) == 2,
-      repr(out2))
-
-# nonce lives on episode pages, NOT the homepage (2026-11-18: the cached
-# homepage has no dgt-store script). streams() must scrape the referer
-# episode page first, homepage only as fallback.
-home_resp = mock.Mock()
-home_resp.text = "<html><body>no nonce here</body></html>"
-home_resp.raise_for_status = mock.Mock()
-
-
-def _get_seq(url, timeout=30, **kwargs):
-    return nonce_resp if "/epi/" in str(url) else home_resp
-
-
-src2 = AnimeDekho()
-with mock.patch("anime_api.sources.animedekho.get",
-                side_effect=_get_seq), \
-        mock.patch("requests.post", return_value=watch_resp) as post2:
-    out3 = src2.streams(json.dumps({
-        "post_id": 10145, "episode_id": 59928,
-        "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-4x38/"}))
-    _args, kwargs = post2.call_args
-    check("streams: nonce from episode page, not homepage",
-          kwargs.get("headers", {}).get("X-WP-Nonce") == "97f7371006",
-          repr(kwargs.get("headers")))
-check("streams: episode-page nonce yields streams",
-      len(out3.get("streams") or []) == 2, repr(out3))
+                return_value=cat_resp) as fake_get:
+    tamil = src.home("latest", category="tamil")
+    called_url = fake_get.call_args[0][0]
+check("home: category hits /category/tamil/",
+      "/category/tamil/" in called_url, called_url)
+check("home: category items tagged audio_lang",
+      len(tamil) == 2 and all(
+          it.get("audio_lang") == "tamil" for it in tamil), repr(tamil))
 
 # ---------------------------------------------------------------- registry
 from anime_api.sources import get_source, list_sources  # noqa: E402

@@ -21,9 +21,9 @@ anime-api/
 The shared contract every source follows lives in
 `INTERFACE.md` (in this repo).
 
-## Source status — live-tested 2026-11-18 (v1.1)
+## Source status — live-tested 2026-11-18 (v1.2)
 
-Full per-endpoint results: `TEST-REPORT.md` (36/48 endpoints passed).
+Full per-endpoint results: `TEST-REPORT.md` (42/48 endpoints passed).
 
 | Source | Language | Status |
 |---|---|---|
@@ -32,9 +32,48 @@ Full per-endpoint results: `TEST-REPORT.md` (36/48 endpoints passed).
 | 9anime (`nineanime`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p) |
 | AniKoto (`anikoto`) | English | ✅ Working — search, home, details, streams (MegaPlay 800p) |
 | AniSuge (`anisuge`) | English | ✅ Working — search, home, details, streams (MegaPlay 1080p, `proxy=true`) |
-| AnimeDekho (`animedekho`) | Hindi | ✅ Working — search, home, details, streams (`embed` iframes) |
-| Anime World India (`animeworld`) | Hindi | ⚠️ **Degraded** — see below |
+| AnimeDekho (`animedekho`) | Hindi | ✅ Working — search, home, details, streams (direct `embed` URL, no watch call) |
+| Anime World India (`animeworld`) | Hindi | ✅ Working from the Mumbai server IP (was degraded from the sandbox IP) |
 | Rare Toons India (`rareanimes`) | Hindi | ⚠️ **Degraded** — see below |
+
+### v1.2 changes (2026-11-18) — speed + AnimeDekho watch gate
+
+Why: the KAZE website felt slow on the user's phone (home ~10s, play 20–30s,
+Hindi dub missing). Measured on the server: the scrapers themselves were fast
+(trending ~1s, latest hindi ~0.6s) — the slowness was no caching (every load
+re-scraped 8 sources), a 45s fan-out ceiling, and AnimeDekho's watch endpoint
+going ad-gated for datacenter IPs (`{"gated": true}` — the site's own
+"skip the ad once per 24h" wall, which must NOT be automated around).
+
+- **Response cache** (`anime_api/cache.py`, thread-safe TTL): lists 10 min,
+  search 5 min, details 30 min, streams 2 min, widgets 30 min; key includes
+  lang/source/query/page/category; responses carry `X-Cache: HIT|MISS`.
+  Measured on the deployed server: trending 1.9s → **3ms warm**,
+  latest hindi 0.68s → **2ms warm**, search "naruto" 1.78s → **0.79s cold /
+  2ms warm**, details (JoJo, 5 seasons) 3.38s → **1.5s cold / 2ms warm**.
+- **Background pre-warm thread**: refreshes trending/popular/latest (all),
+  latest hindi, and tamil/telugu category keys every 5 min from startup.
+- **Fan-out timeout 45s → 12s**; a slow source is listed in `errors` and
+  never gates the response (was the 10s home load).
+- **Singleton source instances** (`sources/__init__.py`): per-instance caches
+  (e.g. AnimeDekho nonce) no longer thrown away per request.
+- **AnimeDekho `streams()` no longer calls the watch endpoint**: the embed URL
+  is built directly (`{host}/embed/<post_id>/<season>-<episode>`, HTTP 200
+  verified) — stream resolve is now ~2ms and needs no network. Episode `data`
+  now carries `season` + `number`; old-format data falls back to the episode
+  page URL as the embed target. The `_watch`/`_nonce_value`/`_quality` code
+  and their unit tests are removed.
+- **AnimeDekho `details()` fetches seasons in parallel** (ThreadPoolExecutor,
+  5 workers) and now also parses **Characters** (`.dgt-cast`) and **Hindi
+  Voice Cast** (`.dgt-vcast__grid`).
+- **New `home(category=...)`** (tamil/telugu) + **`GET /api/widgets`**
+  (Other updates / Release schedule / Upcoming shows from the site sidebar).
+- **`None` details/streams now return HTTP 502** `{"error": ...}` instead of
+  JSON `null` with 200.
+- Tests: new `tests/test_cache.py` 13/13; animedekho unit 32/32 (rewritten
+  streams/category/cast tests); hindi unit 44/44; proxy-rewrite 15/15 —
+  **104/104 unit, no regressions**. Live suite on the server: **42/48**
+  (was 36/48; only RareAnimes still drops — markup drift, 0 items).
 
 ### v1.1.1 changes (2026-11-18) — playback fix, found by live testing
 
@@ -72,19 +111,26 @@ which a browser never sends for a cross-origin `<video>` fetch. Fixes:
   them (AbyssPlayer/Ravok) assembles its file URL in JS, so there is no direct
   file URL server-side; the website plays them in an `<iframe>`.
   Live-tested 6/6 from this sandbox; 31 fixture unit tests pass.
+  (Superseded in v1.2: the watch call is gone — the site ad-gated it for
+  datacenter IPs, so streams() now builds the embed URL directly.)
 - **Details now include `type` + `audio`** in every source (the website needs
   them for Continue/Library snapshots). `streams` gains the `"embed"` type.
 - **Fan-out dedupes `(source, id)`** — sites repeat cards in one list, which
   used to render the same title twice.
 
-### Why the two Hindi sources are degraded
+### Why one Hindi source is still degraded (v1.2 update)
 
-Both Hindi sites hard-block the IP this API was built on at the Cloudflare
-WAF level (HTTP 403 on every request, even from a real headless browser —
-there is no JS challenge to solve and a `cf_clearance` cookie does not lift
-it). Their code is complete and unit-tested (44 fixture tests pass), but no
-live data could be fetched from this sandbox. On a host with a clean IP they
-should work — `anime_api/cf.py` already implements the clearance flow
+AnimeWorld India now works from the deployed Mumbai server IP (live suite
+6/6 in v1.2) — only the sandbox's egress IP is WAF-blocked there. RareAnimes
+still returns 0 items from every IP (markup drift, not a block): it responds
+but its pages no longer match the parser. Its code is complete and
+unit-tested (44 fixture tests pass), but no live data can be fetched until
+the parser is updated for the site's current markup.
+
+For reference, the sandbox-IP block on both sites (v1.0 finding): HTTP 403 on
+every request, even from a real headless browser — there is no JS challenge
+to solve and a `cf_clearance` cookie does not lift it. On a host with a clean
+IP they should work — `anime_api/cf.py` already implements the clearance flow
 (Playwright solve → 15h cookie cache → requests with cookies).
 
 To enable them on your server, either:

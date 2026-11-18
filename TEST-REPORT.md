@@ -1,7 +1,25 @@
 # anime-api — live test report
 
 Date: 2026-11-18 (PKT). Run: `tests/test_live.py` (all sources, real sites).
-Result: **36/48 endpoints passed** — 6 of 8 sources fully working, 2 dropped.
+Result: **42/48 endpoints passed** — 7 of 8 sources fully working, 1 dropped.
+
+## v1.2 — speed, verified live on the deployed server (Oracle Mumbai)
+
+Unit suites: cache 13/13 (new), animedekho 32/32, hindi 44/44,
+proxy-rewrite 15/15 — **104/104, no regressions**.
+
+Server timings (curl, direct to 127.0.0.1:8000), before → after:
+- trending: 1.9s → **0.003s warm** (pre-warmed, X-Cache HIT, 186 items)
+- latest hindi: 0.68s → **0.002s warm** (52 items)
+- popular: 1.14–2.88s → **0.002s warm** (174 items)
+- search "naruto": 1.78s → **0.79s cold / 0.002s warm**
+- details JoJo (5 seasons): 3.38s → 1.5s cold (Demon Slayer) / **0.002s warm**;
+  seasons=5, eps s1=26, characters=10, voice_cast=21
+- streams animedekho: 3.11–5.31s + gated-empty → **0.002s** (direct embed URL,
+  no watch call): `https://animedekho.tv/embed/10145/1-1`
+- widgets: 0.49s cold / 0.001s warm; category tamil: 24 items, warm 0.002s
+- live suite: **42/48** (was 36/48) — only RareAnimes drops (markup drift,
+  0 items on every endpoint; same as v1.1, needs a look later).
 
 ## v1.1.1 — playback fix, verified live on the deployed server
 

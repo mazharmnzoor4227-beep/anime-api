@@ -12,6 +12,7 @@ import pkgutil
 from anime_api.sources.base import Source
 
 _SOURCES = {}
+_INSTANCES = {}
 
 
 def _discover():
@@ -40,14 +41,27 @@ _discover()
 
 
 def list_sources():
-    """Return instantiated sources, sorted by id."""
-    return [_SOURCES[sid]() for sid in sorted(_SOURCES)]
+    """Return instantiated sources, sorted by id.
+
+    v1.2: sources are singletons — a fresh instance per call threw away
+    per-instance caches (e.g. AnimeDekho's nonce) on every request.
+    """
+    return [_instance(sid) for sid in sorted(_SOURCES)]
 
 
 def get_source(source_id):
     """Return an instantiated source, or None if unknown."""
-    cls = _SOURCES.get(source_id)
-    return cls() if cls else None
+    if source_id not in _SOURCES:
+        return None
+    return _instance(source_id)
+
+
+def _instance(source_id):
+    inst = _INSTANCES.get(source_id)
+    if inst is None:
+        inst = _SOURCES[source_id]()
+        _INSTANCES[source_id] = inst
+    return inst
 
 
 def source_ids():
