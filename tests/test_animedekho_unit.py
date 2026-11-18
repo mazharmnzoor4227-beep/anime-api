@@ -73,6 +73,11 @@ DETAIL_HTML = """
 <div data-post="10145"></div>
 <div data-snapshot='%s'></div>
 <div class="dgt-meta">\u2605 8.0 \u00b7 2012 \u00b7 24 min \u00b7 160 episodes \u00b7 Returning Series \u00b7 Series</div>
+<span class="dgt-fact"><small>Age rating</small><b class="dgt-age">R</b></span>
+<span class="dgt-fact"><small>Studio</small><b class="dgt-fact__links"><a href="https://animedekho.tv/browse/?studio=david-production">David Production</a></b></span>
+<a class="dgt-ext__btn dgt-ext__btn--tmdb" href="https://www.themoviedb.org/tv/45790" target="_blank">TMDB</a>
+<a class="dgt-ext__btn dgt-ext__btn--mal" href="https://myanimelist.net/anime/48661" target="_blank">MyAnimeList</a>
+<a class="dgt-ext__btn dgt-ext__btn--anilist" href="https://anilist.co/anime/131942" target="_blank">AniList</a>
 <div class="dgt-overview">Follow the feud between the Joestar Family and Dio Brando.</div>
 <button class="dgt-tab" data-season="1">Season 1 (26)</button>
 <button class="dgt-tab" data-season="2">Season 2 (48)</button>
@@ -92,7 +97,7 @@ EPISODES_JSON = {"series_id": 10145, "season": 1, "episodes": [
      "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-1x1/"},
     {"id": 59688, "series_id": 10145, "season": 1, "episode": 2,
      "name": "A Letter from the Past", "overview": "",
-     "air_date": "2012-10-13", "still": "",
+     "air_date": "2012-10-13", "still": "", "filler": True,
      "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-1x2/"},
 ]}
 
@@ -168,6 +173,18 @@ if det.get("seasons"):
         "url": "https://animedekho.tv/epi/jojos-bizarre-adventure-1x1/"},
         repr(data))
     check("details: ep title", eps[0]["title"] == "Dio the Invader")
+    check("details: ep still/air_date/filler",
+          eps[0].get("still") == "https://image.tmdb.org/t/p/w300/x.jpg"
+          and eps[0].get("air_date") == "2012-10-06"
+          and eps[0].get("filler") is False
+          and eps[1].get("filler") is True, repr(eps))
+check("details: runtime/age/studio/links",
+      det.get("runtime") == 24 and det.get("age_rating") == "R"
+      and det.get("studio") == "David Production"
+      and det.get("links") == {
+          "tmdb": "https://www.themoviedb.org/tv/45790",
+          "mal": "https://myanimelist.net/anime/48661",
+          "anilist": "https://anilist.co/anime/131942"}, repr(det))
 check("details: characters", len(det.get("characters") or []) == 1
       and det["characters"][0]["name"] == "Jolyne Kuujou"
       and det["characters"][0]["role"] == "Main", repr(det.get("characters")))

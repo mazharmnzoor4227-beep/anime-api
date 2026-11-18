@@ -293,6 +293,36 @@ class AnimeDekho(Source):
             status = "completed"
         if is_movie:
             status = "completed"
+        # v1.2.2 — detail fields the clone shows (cross-check 2026-11-18):
+        # runtime comes from the data-snapshot; age rating / studio from
+        # the .dgt-fact blocks; external links from the .dgt-ext__btn
+        # buttons (TMDB / MyAnimeList / AniList).
+        runtime = None
+        if snapshot:
+            try:
+                runtime = int(snapshot.get("runtime")) if snapshot.get("runtime") else None
+            except (TypeError, ValueError):
+                runtime = None
+        age_rating = None
+        studio = None
+        for fact in soup.select(".dgt-fact"):
+            small = fact.select_one("small")
+            label = small.get_text(strip=True) if small else ""
+            bold = fact.select_one("b")
+            value = bold.get_text(" ", strip=True) if bold else ""
+            if not value:
+                continue
+            if label == "Age rating" and not age_rating:
+                age_rating = value
+            elif label == "Studio" and not studio:
+                studio = value
+        links = {}
+        for key, sel in (("tmdb", ".dgt-ext__btn--tmdb"),
+                         ("mal", ".dgt-ext__btn--mal"),
+                         ("anilist", ".dgt-ext__btn--anilist")):
+            a = soup.select_one(sel)
+            if a and a.get("href"):
+                links[key] = a["href"]
         seasons = []
         if not is_movie and post_id:
             season_numbers = []
@@ -345,6 +375,10 @@ class AnimeDekho(Source):
             "score": score,
             "type": "movie" if is_movie else "anime",
             "audio": ["dub"],
+            "runtime": runtime,
+            "age_rating": age_rating,
+            "studio": studio,
+            "links": links,
             "seasons": seasons,
             "characters": self._parse_cast(soup),
             "voice_cast": self._parse_voice_cast(soup),
@@ -426,6 +460,12 @@ class AnimeDekho(Source):
                 episodes.append({
                     "number": number,
                     "title": name,
+                    # v1.2.2: the dgt endpoint carries these — the clone
+                    # shows filler episodes orange-bordered, episode stills
+                    # in the grid, and air dates.
+                    "filler": bool(raw.get("filler")),
+                    "still": raw.get("still") or None,
+                    "air_date": raw.get("air_date") or None,
                     # v1.2: season + number included so streams() can
                     # build the /embed/<post>/<season>-<ep> URL directly.
                     "data": json.dumps({

@@ -80,6 +80,12 @@ def resolve_zephyrix(iframe_url, main_url):
         "quality": None,
         "type": "m3u8",
         "headers": {"Accept": "*/*", "User-Agent": _PLAYER_UA},
-        "proxy": False,
+        # proxy=True (was False): the zephyrix CDN sends no
+        # Access-Control-Allow-Origin, so a browser hls.js XHR to the
+        # direct URL is CORS-blocked and the Hindi-dub stream never plays
+        # (verified 2026-11-18, run 8). /api/proxy serves it same-origin
+        # with the headers attached, and the proxy fetch is fast (200 in
+        # ~0.3s from the server).
+        "proxy": True,
     }
     return [stream], []

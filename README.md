@@ -46,8 +46,10 @@ going ad-gated for datacenter IPs (`{"gated": true}` — the site's own
 "skip the ad once per 24h" wall, which must NOT be automated around).
 
 - **Response cache** (`anime_api/cache.py`, thread-safe TTL): lists 10 min,
-  search 5 min, details 30 min, streams 2 min, widgets 30 min; key includes
-  lang/source/query/page/category; responses carry `X-Cache: HIT|MISS`.
+  search 5 min, details 30 min, streams 10 min (v1.2.1: was 2 min — stream
+  tokens live for days, so repeat episode views start fast), widgets 30 min;
+  key includes lang/source/query/page/category; responses carry
+  `X-Cache: HIT|MISS`.
   Measured on the deployed server: trending 1.9s → **3ms warm**,
   latest hindi 0.68s → **2ms warm**, search "naruto" 1.78s → **0.79s cold /
   2ms warm**, details (JoJo, 5 seasons) 3.38s → **1.5s cold / 2ms warm**.

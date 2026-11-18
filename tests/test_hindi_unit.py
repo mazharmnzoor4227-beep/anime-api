@@ -107,6 +107,9 @@ with mock.patch("anime_api.extractors.zephyrix.requests.post",
     check("zephyrix resolves", len(streams) == 1
           and streams[0]["url"] == "https://zephyrix.example/hls/master.txt"
           and streams[0]["type"] == "m3u8" and subs == [], repr(streams))
+    # proxy=True: the CDN sends no CORS headers, so a browser hls.js XHR
+    # to the direct URL is blocked — the website must play via /api/proxy.
+    check("zephyrix stream is proxied (CORS)", streams[0].get("proxy") is True, repr(streams))
     args, kwargs = post.call_args
     check("zephyrix POST shape",
           args[0] == "https://zephyrix.example/player/index.php?data=abcdef01&do=getVideo"

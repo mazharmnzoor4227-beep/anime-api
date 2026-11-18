@@ -183,6 +183,7 @@ def _prewarm_once():
         ("popular", "all", "all", 1, None),
         ("latest", "all", "all", 1, None),
         ("latest", "hindi", "all", 1, None),
+        ("latest", "english", "all", 1, None),
         ("latest", "all", "all", 1, "tamil"),
         ("latest", "all", "all", 1, "telugu"),
     ]
